@@ -389,7 +389,17 @@
   machine without ever passing through the rendered work directory. Only the
   relay password needs computing — it is the one credential whose key depends on
   which provider was chosen — and the rest are written literally in the playbook
-  where they can be read."
+  where they can be read.
+
+  **Every template interpolating this must use `|safe`.** Selmer HTML-escapes a
+  substituted variable, and this expression is full of single quotes, so without
+  it the playbook renders `lookup(&#39;env&#39;,&#39;…&#39;)` — which Ansible
+  then fails to parse with `unexpected char '&'`. That is not hypothetical: it
+  is how the first real create failed, thirty-four tasks in, on a machine that
+  had already installed Docker, Postgres and WAL-G.
+
+  The credentials written literally in the playbook never hit this, because
+  nothing substitutes them. This one does precisely because it is computed."
   [k]
   (format "{{ lookup('env','COLORS_PAR_%s') }}"
           (-> (name k) (str/replace "-" "_") str/upper-case)))

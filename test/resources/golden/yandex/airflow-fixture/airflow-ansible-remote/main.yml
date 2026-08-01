@@ -539,7 +539,7 @@
           SMTP_HOST=smtp.resend.com
           SMTP_PORT=587
           SMTP_USERNAME=resend
-          SMTP_PASSWORD={{ lookup(&#39;env&#39;,&#39;COLORS_PAR_RESEND_PASSWORD&#39;) }}
+          SMTP_PASSWORD={{ lookup('env','COLORS_PAR_RESEND_PASSWORD') }}
           ALERT_FROM=airflow@notifications.fixture.example
           ALERT_TO=ops@fixture.example
           ALERT_HOSTNAME=airflow.fixture.example
@@ -663,7 +663,7 @@
           AIRFLOW__SMTP__SMTP_HOST=smtp.resend.com
           AIRFLOW__SMTP__SMTP_PORT=587
           AIRFLOW__SMTP__SMTP_USER=resend
-          AIRFLOW__SMTP__SMTP_PASSWORD={{ lookup(&#39;env&#39;,&#39;COLORS_PAR_RESEND_PASSWORD&#39;) }}
+          AIRFLOW__SMTP__SMTP_PASSWORD={{ lookup('env','COLORS_PAR_RESEND_PASSWORD') }}
           AIRFLOW__SMTP__SMTP_STARTTLS=True
           AIRFLOW__SMTP__SMTP_SSL=False
           AIRFLOW__SMTP__SMTP_MAIL_FROM=airflow@notifications.fixture.example

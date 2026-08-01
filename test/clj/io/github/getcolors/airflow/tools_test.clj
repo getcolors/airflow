@@ -238,6 +238,52 @@
         (is (re-find (re-pattern (str "lookup\\('env',\\s*'" par "'\\)")) playbook)
             (str par " must be an Ansible lookup, not a rendered value"))))))
 
+(deftest no-rendered-file-carries-an-html-entity
+  "Selmer HTML-escapes every substituted variable unless the template says
+  `|safe`. Nothing here is HTML, so an entity in rendered output is always a bug
+  — and a silent one, because the file still looks plausible.
+
+  This is a general guard rather than a check on the one expression that has
+  bitten, deliberately. The specific test that was supposed to cover it passed
+  for the wrong reason: it searched the whole playbook for
+  `lookup('env','COLORS_PAR_RESEND_PASSWORD')` and matched the preflight
+  assertion task, which spells those quotes literally in the template, while the
+  env-file line three hundred lines away had been escaped into
+  `lookup(&#39;env&#39;,…)`. Ansible failed on it thirty-four tasks into a real
+  create.
+
+  Anything matching `&#`, `&amp;` or `&quot;` fails here regardless of which
+  template produced it."
+  (let [opts (opts-in :build)]
+    (tools/ansible-remote-step opts)
+    (tools/ansible-local-step opts)
+    (tools/seed-step opts)
+    (doseq [tool [tools/ansible-remote-tool tools/ansible-local-tool
+                  tools/github-tool]
+            file (file-seq (io/file (tools/tool-dir opts tool)))
+            :when (.isFile file)]
+      (let [content (slurp file)]
+        (is (not (re-find #"&#\d+;|&amp;|&quot;|&lt;|&gt;" content))
+            (str (.getName file) " contains an HTML entity — a Selmer "
+                 "substitution is missing |safe"))))))
+
+(deftest the-credential-expressions-render-as-valid-jinja
+  "The credential lines specifically, in the files that carry them, rather than
+  anywhere in the playbook. `lookup('env','X')` has to survive rendering with
+  its quotes intact or Ansible cannot parse it."
+  (let [opts (opts-in :build)
+        _ (tools/ansible-remote-step opts)
+        playbook (slurp-rendered opts tools/ansible-remote-tool "main.yml")]
+    (doseq [[line par] [["SMTP_PASSWORD=" "COLORS_PAR_RESEND_PASSWORD"]
+                        ["AIRFLOW__SMTP__SMTP_PASSWORD=" "COLORS_PAR_RESEND_PASSWORD"]]]
+      (let [rendered (->> (str/split-lines playbook)
+                          (filter #(str/includes? % line))
+                          first)]
+        (is (some? rendered) (str "no line writing " line))
+        (is (= (str (str/trim line) "{{ lookup('env','" par "') }}")
+               (str/trim rendered))
+            (str line " must render as an unescaped Jinja lookup"))))))
+
 (deftest the-remote-stage-renders-everything-it-copies
   (let [opts (opts-in :build)
         _ (tools/ansible-remote-step opts)

@@ -297,4 +297,23 @@ Credentials must be read from the environment at play time, never rendered."
 done
 echo "  ok — every credential is still an Ansible lookup, not a value"
 
+# Selmer HTML-escapes every substituted variable unless the template says
+# `|safe`. Nothing rendered here is HTML, so an entity is always a bug — and a
+# silent one, since the file still looks plausible. A missing |safe on the relay
+# password expression is how the first real create failed, thirty-four tasks in,
+# with Ansible refusing `lookup(&#39;env&#39;,…)`.
+#
+# Across every variant rather than one, because a golden only proves output did
+# not change: a NEW template with the same mistake would be accepted, not caught.
+for variant in digitalocean hcloud oci yandex no-infra no-infra-services acme s3 r2 \
+  digitalocean-no-firewall; do
+  if grep -rlE '&#[0-9]+;|&amp;|&quot;' "$tmp/$variant" 2>/dev/null | head -1 | grep -q .; then
+    offender=$(grep -rlE '&#[0-9]+;|&amp;|&quot;' "$tmp/$variant" | head -1)
+    fail "$variant rendered an HTML entity into ${offender#$tmp/$variant/}.
+A Selmer substitution is missing |safe. Nothing here is HTML, and Ansible will
+refuse the escaped form at play time."
+  fi
+done
+echo "  ok — no variant renders an HTML entity"
+
 echo "golden: every variant and every assertion passed"

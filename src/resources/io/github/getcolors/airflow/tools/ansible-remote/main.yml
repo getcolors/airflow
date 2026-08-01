@@ -539,7 +539,7 @@
           SMTP_HOST=<{ smtp-server }>
           SMTP_PORT=<{ smtp-port }>
           SMTP_USERNAME=<{ smtp-username }>
-          SMTP_PASSWORD=<{ smtp-password-lookup }>
+          SMTP_PASSWORD=<{ smtp-password-lookup|safe }>
           ALERT_FROM=<{ airflow-smtp-from }>
           ALERT_TO=<{ alerts-email }>
           ALERT_HOSTNAME=<{ airflow-host }>
@@ -663,7 +663,7 @@
           AIRFLOW__SMTP__SMTP_HOST=<{ smtp-server }>
           AIRFLOW__SMTP__SMTP_PORT=<{ smtp-port }>
           AIRFLOW__SMTP__SMTP_USER=<{ smtp-username }>
-          AIRFLOW__SMTP__SMTP_PASSWORD=<{ smtp-password-lookup }>
+          AIRFLOW__SMTP__SMTP_PASSWORD=<{ smtp-password-lookup|safe }>
           AIRFLOW__SMTP__SMTP_STARTTLS=True
           AIRFLOW__SMTP__SMTP_SSL=False
           AIRFLOW__SMTP__SMTP_MAIL_FROM=<{ airflow-smtp-from }>
