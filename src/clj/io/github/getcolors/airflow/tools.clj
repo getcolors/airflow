@@ -555,8 +555,20 @@
   [opts]
   (let [dir (tool-dir opts github-tool)
         rendered (sc/scaffold opts (seed-specs opts dir))]
-    (if (wf/failed? rendered)
-      rendered
+    (cond
+      (wf/failed? rendered) rendered
+
+      ;; A delete scaffold REMOVES the rendered tree rather than writing it, so
+      ;; there is nothing left to read back — and nothing to read it for, since
+      ;; delete never seeds. Reading anyway is not a hypothetical mistake: it is
+      ;; what the first real delete did, throwing FileNotFoundException out of
+      ;; the very first stage and leaving the deploy credentials unrevoked.
+      ;;
+      ;; The scaffold still runs, because removing the rendered tree is the
+      ;; useful half of what this step does on a delete.
+      (= :delete (:green/event opts)) rendered
+
+      :else
       (assoc rendered :airflow/seed-files
              (mapv (fn [{:keys [path]}]
                      {:path path :content (slurp (str dir "/seed/" path))})

@@ -8,6 +8,7 @@
    [clojure.test :refer [deftest is testing]]
    [green.cli :as green-cli]
    [green.tofu :as tofu]
+   [green.workflow :as wf]
    [io.github.getcolors.airflow.github :as github]
    [io.github.getcolors.airflow.tools :as tools]
    [io.github.getcolors.airflow.validate-test :refer [fixture]]))
@@ -400,3 +401,22 @@
     (is (= "{{ lookup('env','COLORS_PAR_POSTGRES_PASSWORD') }}"
            (tools/par-lookup :postgres-password)))
     (is (= "COLORS_PAR_POSTGRES_PASSWORD" (green-cli/par-name :postgres-password)))))
+
+(deftest a-delete-does-not-read-back-the-seed-it-just-removed
+  "The scaffold removes the rendered tree on a delete, so reading those files
+  back throws — which is exactly what the first real delete did, out of the very
+  first stage, leaving the deploy credentials unrevoked.
+
+  Only a real delete could find this: build and create both write the tree
+  before reading it, so every test and every golden passed."
+  (let [opts (opts-in :build)]
+    (tools/seed-step opts)
+    (is (.exists (io/file (tools/tool-dir opts tools/github-tool)
+                          "seed/dags/hello_world.py")))
+    (let [deleted (tools/seed-step (assoc opts :green/event :delete))]
+      (is (not (wf/failed? deleted)) "a delete must not throw here")
+      (is (nil? (:airflow/seed-files deleted))
+          "and must not claim to carry a seed it has just removed")
+      (testing "while still doing the useful half — removing the rendered tree"
+        (is (not (.exists (io/file (tools/tool-dir opts tools/github-tool)
+                                   "seed/dags/hello_world.py"))))))))
