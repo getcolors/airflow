@@ -8,6 +8,7 @@
    [clojure.test :refer [deftest is testing]]
    [green.cli :as green-cli]
    [green.tofu :as tofu]
+   [io.github.getcolors.airflow.github :as github]
    [io.github.getcolors.airflow.tools :as tools]
    [io.github.getcolors.airflow.validate-test :refer [fixture]]))
 
@@ -283,6 +284,38 @@
         (is (= (str (str/trim line) "{{ lookup('env','" par "') }}")
                (str/trim rendered))
             (str line " must render as an unescaped Jinja lookup"))))))
+
+(deftest the-deploy-account-exists-before-anything-is-chowned-to-it
+  "`chown` fails outright on a user that does not exist — `failed to look up
+  user deploy` — so the account has to be created before the DAG directory is
+  given to it.
+
+  This is a property of task ORDER, which is invisible to every other check
+  here: the playbook renders, parses and syntax-checks perfectly either way. It
+  is how the second real create failed, and the first create never reached the
+  task at all, so the bug sat behind an unrelated failure.
+
+  The key installation is deliberately not what moved. An account with no
+  authorized_keys cannot be authenticated as, so creating it early opens
+  nothing — where installing the key early would open the machine before the
+  stack it feeds is running."
+  (let [opts (opts-in :build)
+        _ (tools/ansible-remote-step opts)
+        lines (str/split-lines (slurp-rendered opts tools/ansible-remote-tool "main.yml"))
+        index-of (fn [pred] (first (keep-indexed #(when (pred %2) %1) lines)))
+        creates-user (index-of #(str/includes? % "name: Create the deploy user"))
+        first-chown (index-of #(re-find (re-pattern (str "owner:\\s*" github/deploy-user "\\s*$")) %))]
+    (is (some? creates-user) "the playbook must create the deploy account")
+    (is (some? first-chown) "the playbook must chown something to it")
+    (is (< creates-user first-chown)
+        (str "the deploy account is created at line " creates-user
+             " but something is chowned to it at line " first-chown
+             " — chown fails on a user that does not exist yet"))
+    (testing "and the key still goes in last, which is the security property"
+      (let [installs-key (index-of #(str/includes? % "name: Reconcile the deploy authorized keys"))
+            starts-stack (index-of #(str/includes? % "name: Bring the Airflow stack up"))]
+        (is (< starts-stack installs-key)
+            "the key must not be installed before the stack it feeds is up")))))
 
 (deftest the-remote-stage-renders-everything-it-copies
   (let [opts (opts-in :build)

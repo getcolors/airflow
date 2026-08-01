@@ -582,6 +582,22 @@
 
     # ---------------------------------------------------------------- airflow
 
+    # Created here, not with the key that goes in it, because the DAG directory
+    # below is chowned to this account and `chown` fails outright on a user that
+    # does not exist yet — "failed to look up user deploy". That is exactly how
+    # the second real create failed.
+    #
+    # Deliberately NOT moved by pulling the key installation forward instead: an
+    # account with no authorized_keys cannot be authenticated as, so creating it
+    # early opens nothing, while installing the key early would open the machine
+    # before the stack it feeds is running.
+    - name: Create the deploy user
+      ansible.builtin.user:
+        name: deploy
+        shell: /bin/bash
+        create_home: true
+        state: present
+
     - name: Ensure the DAG and log directories
       ansible.builtin.file:
         path: "{{ item.path }}"
@@ -767,17 +783,15 @@
 
     # ----------------------------------------------------------- the deploy key
     #
-    # THIRD ordering constraint, and the reason it is last: this is the only
-    # thing on the machine reachable from the internet by design, and opening it
-    # before the stack it feeds is running would accept a DAG sync into a
-    # directory nothing is watching.
-
-    - name: Create the deploy user
-      ansible.builtin.user:
-        name: deploy
-        shell: /bin/bash
-        create_home: true
-        state: present
+    # THIRD ordering constraint, and the reason the KEY is last: an installed key
+    # is the only thing on the machine reachable from the internet by design, and
+    # opening it before the stack it feeds is running would accept a DAG sync
+    # into a directory nothing is watching.
+    #
+    # The *account* is created much earlier, up in the airflow section, because
+    # the DAG directory is chowned to it. An account with no authorized_keys is
+    # not a way in — nothing can authenticate as it — so splitting the two costs
+    # nothing and is what makes the ordering above actually work.
 
     # No sudoers entry, and that is the difference from ONCE worth noticing.
     # ONCE's deploy key carries NOPASSWD sudo for `once *` because a deploy there
