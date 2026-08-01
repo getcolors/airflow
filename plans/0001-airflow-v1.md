@@ -40,12 +40,15 @@ this document; between them they are the specification.
 | `github.clj` | done |
 | `workflow.clj`, launcher, skill payload | done — `./scripts/launcher.sh`, 11 checks |
 | tests | done — `bb test`, 78 tests / 252 assertions |
-| `scripts/golden.sh` | done — 10 variants + 15 assertions |
-| a real `create` | **not run — no infrastructure exists** |
+| `scripts/golden.sh` | done — 10 variants + 16 assertions |
+| a real `create` | **run — Airflow is live and serving**; see "What only a real create found" |
+| the DAG deploy path | **blocked** — needs `workflow` scope on `COLORS_PAR_GITHUB_TOKEN` |
 
-Nothing below this line has been executed against a provider. Every claim about
-what the machine does is a claim about what the playbook says, not about a
-machine that has run it.
+That last line was true for the first three revisions of this document and is
+not any more. Airflow 3.1.3 is serving on the real host, behind Caddy, with
+Postgres 16 archiving to R2 and both backup timers armed. What remains unproven
+end to end is the DAG deploy path, which is blocked on a token scope rather than
+on anything in this package.
 
 ## Decisions
 
@@ -602,6 +605,74 @@ The lesson worth keeping: **validation cannot catch either of these.** Both are
 well-formed strings that only a provider can adjudicate, which is what makes a
 read-only sweep against the live account worth running before a first create
 rather than discovering them half way through one.
+
+### What only a real create found
+
+Five creates were run against live infrastructure. Every one of them failed on
+something no test, golden, syntax check or preflight could have caught, and the
+pattern across them is the finding worth keeping: **each bug was invisible to
+every static check, and each was masked by the one before it.**
+
+| # | Failed at | Cause |
+|---|---|---|
+| 1 | task 34 of the playbook | Selmer HTML-escaped a credential expression — `lookup(&#39;env&#39;,…)` |
+| 2 | task 29 | `chown` to the `deploy` user, created 300 lines later in the play |
+| 3 | — | succeeded; Airflow live |
+| 4 | github stage | seeding refused with a misleading 404 |
+| 5 | github stage | same, after a fix built on a wrong diagnosis |
+
+The first two are ordinary bugs with an unordinary property: the playbook
+rendered, parsed and `--syntax-check`ed identically in both the broken and fixed
+states. Only running it could tell them apart. Both now have tests that bite —
+one refusing any HTML entity in rendered output, one asserting the order of two
+tasks — and each was verified by reintroducing the bug rather than trusted for
+being green.
+
+The second was hidden behind the first: create 1 never reached the task that
+create 2 failed on. **A failure does not mean there is only one failure**, and a
+create that dies at task 34 has said nothing about tasks 35 onward.
+
+### The 404 that was not a 404
+
+Creates 4 and 5 are the ones to learn from, because the diagnosis was wrong
+twice and the second wrong fix was built on the evidence of the first.
+
+Seeding the DAG repository failed with `404 Not Found`. That looked like a race
+against GitHub initialising a new repository, and the timing evidence seemed to
+agree: a manual write to an empty repository succeeded where the tool's had
+failed, and the repository was twenty minutes old at the time. A retry was
+added. It failed. The retry was widened to a minute, measured against a
+repository that accepted a write seventy-one seconds after creation. That failed
+too.
+
+**None of it was a race.** Writing under `.github/workflows/` requires the
+`workflow` OAuth scope, and GitHub reports its absence as **404 rather than
+403** — the same status as a repository that genuinely is not there. The
+"evidence" for a race was an artefact of which paths were being probed: every
+successful probe wrote a non-workflow path, every failure wrote the workflow
+file. Same token, same repository, seconds apart:
+
+```
+dags/hello_world.py                  accepted
+.github/workflows/deploy-dags.yml    404
+```
+
+Three lessons, in the order they cost time:
+
+1. **The evidence was already in hand and went unread.** The very first push of
+   this repository failed with `refusing to allow an OAuth App to create or
+   update workflow .github/workflows/cicd.yml without workflow scope`. The same
+   permission, the same file prefix, an hour earlier.
+2. **A probe that differs from the failing call proves nothing.** The manual
+   writes that "disproved" the permission theory used a different path, which
+   was the only variable that mattered.
+3. **A retry is not a diagnosis.** Two retry budgets were tuned against a
+   failure that could never succeed. Retrying should follow understanding why
+   something is transient, not substitute for it.
+
+The package now recognises the pattern and reports the scope, the variable, and
+why the status code lies. `COLORS_PAR_GITHUB_TOKEN` needs `repo` **and**
+`workflow`, which is stated in `colors.yml` and in the configuration reference.
 
 ### Smaller corrections
 
