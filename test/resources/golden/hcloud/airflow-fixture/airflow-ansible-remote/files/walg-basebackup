@@ -1,0 +1,26 @@
+#!/bin/sh
+# One base backup, then prune what it made redundant.
+#
+# WAL archiving alone is NOT a restorable backup: WAL replays forward from a
+# base backup, so with no base there is nothing to replay onto. This script is
+# what makes the archive mean anything, and the timer beside it is what makes it
+# happen more than once.
+#
+# Retention runs immediately after the push rather than on its own schedule, so
+# the bucket is pruned only when there is a fresh backup to prune against. A
+# separate retention timer could delete the last good base backup on a day the
+# push failed, which is the one failure mode this ordering makes impossible.
+#
+# `delete retain FULL` removes older base backups AND the WAL segments beneath
+# them, so this is what bounds what the bucket costs as well as how far back a
+# recovery can reach.
+#
+# A non-zero exit here starts the notifier through the unit's OnFailure=. Both
+# commands are therefore deliberately unguarded: `set -e` means a failed push
+# never reaches the delete, so a bad run cannot prune against a backup that does
+# not exist.
+
+set -eu
+
+/usr/local/bin/wal-g-wrapper backup-push "/var/lib/postgresql/16/main"
+/usr/local/bin/wal-g-wrapper delete retain FULL 7 --confirm

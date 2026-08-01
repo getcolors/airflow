@@ -1,0 +1,149 @@
+# The Airflow stack, LocalExecutor, plus the Caddy that fronts it.
+#
+# Derived from Apache's reference compose for this version, with everything a
+# single box does not need taken out: no Redis, no Celery worker, no flower, no
+# second broker to keep alive. LocalExecutor runs tasks as subprocesses of the
+# scheduler, which is the right shape for one machine and removes three services
+# and a message broker from the failure surface.
+#
+# The metadata database is NOT here. Postgres runs on the host, because
+# `archive_command` has to invoke the wal-g binary in the same filesystem as the
+# postgres process — containerising it would mean building and hosting a custom
+# image with wal-g inside, which is infrastructure this stack does not have.
+#
+# Nothing in this file is secret. Every credential arrives through the env_file
+# below, which Ansible writes 0600 on the machine and which never passes through
+# the rendered work directory.
+
+x-airflow-common: &airflow-common
+  image: <{ airflow-image }>
+  env_file:
+    - <{ airflow-conf-dir }>/airflow.env
+  # The uid the image's own `airflow` user has. Named rather than left to the
+  # image default because the logs directory below is bind-mounted from the host
+  # and has to be chowned to something, and this is that something.
+  user: "<{ airflow-uid }>:0"
+  volumes:
+    # Read-only, and it is the deploy key that writes here — over rsync, from
+    # CI, confined by the rrsync ForceCommand. Airflow has no business writing
+    # to its own DAG directory, and mounting it rw would give a DAG a way to
+    # edit the next DAG to run.
+    - <{ dags-dest }>:/opt/airflow/dags:ro
+    - <{ airflow-logs-dir }>:/opt/airflow/logs
+  restart: always
+
+services:
+  # Runs to completion before anything else starts, and is the only service that
+  # touches the schema. Every other service waits on it succeeding, so a failed
+  # migration stops the stack rather than producing four containers crash-looping
+  # against a half-migrated database.
+  #
+  # It does NOT create a user. Airflow 3's default SimpleAuthManager generates
+  # its own passwords into a `.generated` file and takes none from configuration
+  # — which is why authentication for this deployment lives in Caddy instead.
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - airflow db migrate
+    restart: "no"
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    # No `ports:` on purpose, and this is the other half of the authentication
+    # decision. The api-server is reachable only from the compose network, so
+    # Caddy is not merely the recommended route to it — it is the only one. A
+    # published port, even bound to 127.0.0.1, would be a second door that
+    # anything with a shell on the box could walk through.
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  # Its own service since Airflow 3, where DAG parsing moved out of the
+  # scheduler. It is also what makes the deploy path need no sudo: it rescans
+  # the DAG directory on a timer, so an rsync of new files is picked up without
+  # anything being restarted.
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  # Terminates TLS, holds the only credential a browser is asked for, and
+  # reverse-proxies to the api-server over the compose network.
+  #
+  # A container rather than a package from Caddy's apt repository, for two
+  # reasons. It is pinned like everything else here — an apt repo would make the
+  # one process facing the internet the only unpinned thing on the machine — and
+  # it can address `airflow-apiserver` by name, which is what lets the api-server
+  # publish no port at all.
+  caddy:
+    image: <{ caddy-image }>
+    env_file:
+      - <{ airflow-conf-dir }>/caddy.env
+    ports:
+      # 80 as well as 443. Caddy answers the ACME HTTP-01 challenge there, and
+      # Cloudflare does not apply Always Use HTTPS to /.well-known/acme-challenge/
+      # — which is the whole reason a certificate can be obtained at all through
+      # a proxied, strict-SSL zone.
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /etc/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Named volumes, because /data holds the account key and the issued
+      # certificates. Losing them means re-issuing on every container recreate,
+      # which is how a deployment meets Let's Encrypt's rate limits.
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: always
+    # Start order only, deliberately not `service_healthy`. Caddy has to be
+    # answering on 80 for the ACME challenge before Airflow is necessarily
+    # healthy, and on a first create Airflow's health depends on a migration
+    # that takes longer than the certificate does.
+    depends_on:
+      - airflow-apiserver
+
+volumes:
+  caddy-data:
+  caddy-config:

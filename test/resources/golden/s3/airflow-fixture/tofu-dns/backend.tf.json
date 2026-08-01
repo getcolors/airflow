@@ -1,0 +1,11 @@
+{
+  "terraform" : {
+    "backend" : {
+      "s3" : {
+        "bucket" : "airflow-fixture-state",
+        "key" : "airflow-fixture/tofu-dns.tfstate",
+        "region" : "eu-central-1"
+      }
+    }
+  }
+}

@@ -1,0 +1,54 @@
+# TLS, and the only credential a browser is asked for.
+#
+# Caddy obtains its certificate from Let's Encrypt over HTTP-01, the same way
+# ONCE's proxy does. That deserves stating because it looks like it cannot work:
+# the A record is proxied, the zone sets always_use_https — which would redirect
+# the challenge — and ssl = strict means Cloudflare then refuses an origin
+# without an already-valid certificate. A chicken-and-egg ending in a 526.
+#
+# It works because Cloudflare does not apply Always Use HTTPS to
+# /.well-known/acme-challenge/, so the challenge reaches the origin over plain
+# HTTP. The evidence is not a documentation page: once-colors runs these exact
+# zone settings and https://www.getcolors.ai answers 200 through Cloudflare,
+# which under `strict` is only possible with a publicly trusted certificate on
+# the origin, obtained this way.
+
+{
+	# Where the CA sends expiry and problem notices. Optional — without it Caddy
+	# still gets certificates, you simply hear nothing from Let's Encrypt when
+	# something is wrong with them.
+	email ops@fixture.example
+}
+
+airflow.fixture.example {
+	encode zstd gzip
+
+	# Authentication for the whole deployment, at the edge rather than in
+	# Airflow.
+	#
+	# Airflow 3 replaced the FAB auth manager with SimpleAuthManager, which does
+	# not accept a password from configuration — it generates one into
+	# simple_auth_manager_passwords.json.generated at startup. Setting the admin
+	# password would mean writing that file ourselves and depending on its name
+	# across upgrades.
+	#
+	# This is more robust than it is elegant. It survives Airflow's auth manager
+	# churn, it covers the REST API as well as the UI, and it keeps one
+	# credential. The cost is that Airflow has no user model here: one login for
+	# one operator, and a second person means Cloudflare Access or FAB, not
+	# another row.
+	#
+	# {$...} is the pre-parse form, substituted before the Caddyfile is read, so
+	# it works inside a directive argument where the runtime {env.*} placeholder
+	# would not. The value is a bcrypt hash computed on this machine with
+	# `caddy hash-password` and written to caddy.env 0600 — it is never rendered
+	# into the work directory. Unset, this expands to nothing and Caddy refuses
+	# to start, which is the right way for a missing password to fail.
+	basic_auth {
+		admin {$AIRFLOW_ADMIN_PASSWORD_HASH}
+	}
+
+	# By service name over the compose network. The api-server publishes no port,
+	# so this is the only path to it from anywhere.
+	reverse_proxy airflow-apiserver:8080
+}

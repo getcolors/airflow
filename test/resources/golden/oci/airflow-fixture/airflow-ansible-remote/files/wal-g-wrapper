@@ -1,0 +1,23 @@
+#!/bin/sh
+# wal-g, with its credentials in the environment.
+#
+# This exists because of `archive_command`. Postgres runs it from the
+# postmaster's own environment, which has none of the WAL-G configuration in it
+# — no bucket, no endpoint, no keys — and there is nowhere in postgresql.conf to
+# put them. So the archive command invokes this, and this sources the 0600 file
+# that holds them.
+#
+# Every other caller goes through it too, for one reason: if the timers sourced
+# the environment some other way, `archive_command` would be the only path with
+# its own copy of that logic, and it is also the path nobody tests by hand.
+#
+# `set -a` exports what the file defines, which is what a child process needs;
+# a bare `.` would leave the values as shell variables wal-g never sees.
+
+set -eu
+
+set -a
+. /etc/wal-g.d/env
+set +a
+
+exec /usr/local/bin/wal-g "$@"

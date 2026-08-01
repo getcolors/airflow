@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+
+"""Mail the operator that a backup unit failed.
+
+Started by `OnFailure=walg-alert@%n.service` on both timer services, so the one
+argument it takes is the name of the unit that failed. It is the only alerting
+path on this machine, which is why it reports through the relay Airflow already
+uses rather than through anything local.
+
+There is deliberately no MTA on this box. Airflow speaks SMTP directly with
+smtplib and so does this, so installing s-nail or postfix to catch cron output
+would be a second mail path that delivers to a spool nobody reads. That is also
+why the backups are systemd timers rather than cron entries: cron's failure
+story is mail to a local spool, and there is nothing here to deliver it.
+
+Credentials arrive from systemd's EnvironmentFile, which is 0600 on this
+machine and never passes through the rendered work directory.
+"""
+
+import os
+import smtplib
+import socket
+import subprocess
+import sys
+from email.message import EmailMessage
+
+JOURNAL_LINES = "50"
+
+
+def journal(unit):
+    """The tail of the failed unit's log, which is the whole point of the mail.
+
+    An alert that says only "the backup failed" costs a login to learn anything;
+    one carrying the last fifty lines usually costs nothing. A failure to read
+    the journal is not itself worth failing over — the mail still has to go.
+    """
+    try:
+        result = subprocess.run(
+            ["journalctl", "-u", unit, "-n", JOURNAL_LINES, "--no-pager"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return result.stdout or result.stderr or "(the journal was empty)"
+    except Exception as error:  # noqa: BLE001 - reported, never raised
+        return f"(could not read the journal: {error})"
+
+
+def main():
+    unit = sys.argv[1] if len(sys.argv) > 1 else "an unknown unit"
+    host = os.environ.get("ALERT_HOSTNAME") or socket.gethostname()
+
+    message = EmailMessage()
+    message["Subject"] = f"[airflow] {unit} failed on {host}"
+    message["From"] = os.environ["ALERT_FROM"]
+    message["To"] = os.environ["ALERT_TO"]
+    message.set_content(
+        f"{unit} failed on {host}.\n"
+        "\n"
+        "This is the Postgres backup path for the Airflow metadata database. "
+        "Until it succeeds again, the archive is not gaining new restore "
+        "points — and if the failing unit is walg-check, it means no base "
+        "backup has completed recently enough to be worth much.\n"
+        "\n"
+        f"    systemctl status {unit}\n"
+        "    systemctl list-timers 'walg-*'\n"
+        "\n"
+        f"Last {JOURNAL_LINES} journal lines:\n"
+        "\n"
+        f"{journal(unit)}"
+    )
+
+    with smtplib.SMTP(os.environ["SMTP_HOST"], int(os.environ["SMTP_PORT"]), timeout=30) as smtp:
+        smtp.starttls()
+        smtp.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
+        smtp.send_message(message)
+
+    print(f"reported {unit} to {os.environ['ALERT_TO']}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

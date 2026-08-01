@@ -1,0 +1,1 @@
+restrict,command="/usr/local/bin/rrsync -wo /srv/airflow/dags" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBUILDPLACEHOLDER0000000000000000000000 airflow-deploy-airflow-fixture-fixture-airflow-dags

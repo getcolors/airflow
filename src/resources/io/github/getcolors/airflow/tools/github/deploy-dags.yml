@@ -1,0 +1,71 @@
+# Push the DAGs in this repository to the Airflow server.
+#
+# Seeded once, when colors created this repository, and never written again —
+# edit it freely. Nothing here is reconciled on a later create; only the
+# credentials below are.
+#
+# The design is push, not pull. The server holds no key for this repository, has
+# no timer polling it and runs no agent: everything it accepts arrives over one
+# SSH connection whose key is confined by a ForceCommand to writing into the DAG
+# directory and nothing else. A leaked deploy key writes DAGs. It cannot read
+# them back, cannot run a command, and has no sudo.
+name: Deploy DAGs
+
+on:
+  push:
+    branches: [<{ dags-branch }>]
+  workflow_dispatch:
+
+concurrency:
+  # One sync at a time. Two overlapping rsyncs against one directory, both with
+  # --delete, can leave a DAG that exists in neither run's file list.
+  group: deploy-dags
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Created by colors and named after the profile. The deploy key and the
+    # server's address live in it, so a workflow that names a different
+    # environment finds no credentials at all.
+    environment: <{ profile }>
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the deploy key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # Captured once, when the server was provisioned, rather than scanned
+          # on every deploy. This is still trust on first use — but the trust
+          # was established once, over an authenticated administrative
+          # connection, and from here on a substituted host key is detected.
+          printf '%s\n' "${{ vars.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Sync the DAGs
+        run: |
+          rsync -rlpt --delete \
+            -e "ssh -i ~/.ssh/id_ed25519 -o UserKnownHostsFile=~/.ssh/known_hosts -o IdentitiesOnly=yes" \
+            ./dags/ "${{ vars.SERVER_USER }}@${{ vars.SERVER_IP }}:."
+        # The destination is `.`, not an absolute path. The forced command on the
+        # server is `rrsync -wo <dags-dest>`, and rrsync chdirs into that
+        # directory and refuses anything absolute or containing `..` — so paths
+        # here are relative to it and the server decides where that is.
+        #
+        # --delete so a DAG removed from this repository is removed from the
+        # server. rrsync's -wo permits deletes; only its -no-del would block
+        # them, and a sync that could add DAGs but never retire one is how a
+        # deleted DAG keeps running for months.
+        #
+        # -rlpt rather than -a: no --owner, --group or --devices, none of which
+        # survive a push to an unprivileged account anyway, and each of which is
+        # one more rsync option the ForceCommand has to reason about.
+
+      - name: Report what the server will pick up
+        run: |
+          echo "Synced to ${{ vars.SERVER_IP }}."
+          echo "Airflow's dag-processor rescans on its own timer, so nothing"
+          echo "needs restarting — new DAGs appear within a minute or two."

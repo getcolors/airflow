@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+
+"""Fail when the newest base backup is older than walg-max-backup-age-hours.
+
+This is the answer to the one thing `OnFailure=` structurally cannot catch. That
+fires when the backup RUNS and fails; a timer that never runs at all — masked,
+disabled, or a unit that failed to install — produces no failure and therefore
+no mail. Silence would otherwise mean "no failures" and "no backups" alike.
+
+So this alerts on ABSENCE. It asks the bucket what the newest base backup is and
+exits non-zero when the answer is too old or missing, and it reports through the
+same OnFailure= notifier as the backup itself.
+
+It is a systemd timer rather than an Airflow DAG on purpose. A check that runs
+inside the thing it monitors goes quiet exactly when the machine is unhealthy,
+and this keeps one alerting path to maintain instead of two.
+
+What it does not close, stated because it is the last gap: if the notifier
+breaks, or this timer is itself masked, silence returns. Closing that needs a
+dead man's switch off the box — something external expecting a periodic check-in
+and complaining when it stops.
+"""
+
+import json
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+MAX_AGE_HOURS = 30
+WRAPPER = "/usr/local/bin/wal-g-wrapper"
+
+# wal-g has spelled the completion time differently across versions and
+# subcommands, and this runs against whichever binary walg-version pinned.
+# Reading every candidate and taking the newest is cheaper than pinning the
+# check to a field name that is not a stable contract — and a version that
+# renames all of them fails loudly below rather than silently reporting fresh.
+TIME_KEYS = ("finish_time", "time", "start_time", "date")
+
+
+def parse_time(value):
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def newest(backups):
+    times = [
+        parsed
+        for backup in backups
+        for key in TIME_KEYS
+        if (parsed := parse_time(backup.get(key))) is not None
+    ]
+    return max(times) if times else None
+
+
+def main():
+    result = subprocess.run(
+        [WRAPPER, "backup-list", "--json"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(
+            "wal-g backup-list failed, so the age of the newest base backup is "
+            f"unknown:\n{result.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return 1
+
+    # An empty archive prints nothing at all on some versions and `[]` on
+    # others, and both mean the same thing.
+    payload = result.stdout.strip() or "[]"
+    try:
+        backups = json.loads(payload)
+    except json.JSONDecodeError as error:
+        print(f"could not parse `wal-g backup-list --json`: {error}", file=sys.stderr)
+        return 1
+
+    if not backups:
+        print(
+            "there is no base backup in the archive at all. WAL is being shipped "
+            "into something nothing can be restored from — check "
+            "`systemctl status walg-basebackup.service`.",
+            file=sys.stderr,
+        )
+        return 1
+
+    latest = newest(backups)
+    if latest is None:
+        print(
+            "wal-g listed backups but none of them carried a timestamp this "
+            f"check recognises (looked for {', '.join(TIME_KEYS)}). The pinned "
+            "wal-g version may have renamed the field.",
+            file=sys.stderr,
+        )
+        return 1
+
+    age_hours = (datetime.now(timezone.utc) - latest).total_seconds() / 3600
+    if age_hours > MAX_AGE_HOURS:
+        print(
+            f"the newest base backup is {age_hours:.1f} hours old, older than "
+            f"the {MAX_AGE_HOURS} hour limit. It was taken at "
+            f"{latest.isoformat()}.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"newest base backup is {age_hours:.1f} hours old")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

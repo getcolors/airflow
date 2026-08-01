@@ -1,0 +1,119 @@
+# One fixture, every provider variant. scripts/golden.sh renders this file with
+# COLORS_PAR_* overrides for the keys that select a provider, so the goldens all
+# describe the same desired state and cannot quietly drift apart from each other.
+#
+# Values are plausible but fictional. Nothing here is a credential.
+profile: airflow-fixture
+workdir: .colors
+
+provider-compute: digitalocean
+provider-dns: cloudflare
+provider-smtp: resend
+provider-backend: local
+
+compute-prevent-destroy: true
+
+# --- airflow -----------------------------------------------------------------
+
+airflow-host: airflow.fixture.example
+airflow-admin-username: admin
+airflow-image: apache/airflow:3.1.3
+caddy-image: caddy:2.11.4
+
+# Under notifications.<zone>, because the resend branch of state-errors checks
+# it and every variant here but one selects resend.
+airflow-smtp-from: airflow@notifications.fixture.example
+
+# Deliberately NOT set, so the goldens hold the absent branch of the Caddyfile's
+# global-options block. The present branch is covered by the `acme` variant in
+# golden.sh, which is the cheaper way round: one extra variant against one extra
+# `<% if %>` in a file every other variant already renders.
+#
+# caddy-acme-email: ops@fixture.example
+
+# --- dags --------------------------------------------------------------------
+
+dags-repo: fixture/airflow-dags
+dags-dest: /srv/airflow/dags
+dags-branch: main
+
+# --- compute, every provider -------------------------------------------------
+
+digitalocean-name: airflow-fixture
+digitalocean-region: ams3
+digitalocean-size: s-2vcpu-8gb
+digitalocean-image: ubuntu-24-04-x64
+digitalocean-vpc-uuid: 00000000-0000-0000-0000-000000000000
+digitalocean-ssh-keys: fixture-key
+digitalocean-firewall: true
+digitalocean-ssh-sources:
+  - 0.0.0.0/0
+  - "::/0"
+digitalocean-http-sources:
+  - 0.0.0.0/0
+  - "::/0"
+
+hcloud-name: airflow-fixture
+hcloud-image: ubuntu-24.04
+hcloud-server-type: cx23
+hcloud-location: hel1
+hcloud-ssh-keys: fixture-key
+
+compute-pubkey: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixtureKeyForGoldenBuildsOnly
+
+oci-config-file-profile: DEFAULT
+oci-subnet-id: ocid1.subnet.oc1.eu-frankfurt-1.aaaaaaaafixturesubnet
+oci-compartment-id: ocid1.tenancy.oc1..aaaaaaaafixturecompartment
+oci-availability-domain: XquT:EU-FRANKFURT-1-AD-1
+oci-display-name: airflow-fixture
+oci-shape: VM.Standard.A2.Flex
+oci-ocpus: 2
+oci-memory-in-gbs: 12
+oci-boot-volume-size-in-gbs: 100
+oci-boot-volume-vpus-per-gb: 30
+oci-ssh-authorized-keys: /home/fixture/.ssh/id_ed25519.pub
+
+yandex-cloud-id: b1gfixturecloud
+yandex-folder-id: b1gfixturefolder
+yandex-zone: ru-central1-a
+yandex-image-family: ubuntu-2404-lts
+yandex-name: airflow-fixture
+yandex-subnet-cidr: 10.0.0.0/24
+yandex-platform-id: standard-v3
+yandex-cores: 2
+yandex-memory-gb: 8
+yandex-core-fraction: 100
+yandex-disk-size-gb: 50
+
+# 198.51.100.10 is the address the `compute-address` assertion in golden.sh
+# looks for in the rendered A record. It is deliberately not 192.168.0.1: that
+# is what ONCE's own fallback produces, and the whole point of the check is that
+# this package's compute step publishes `:once/compute-params` rather than
+# letting ONCE fall through to it.
+no-infra-compute-ip: 198.51.100.10
+no-infra-compute-user: root
+no-infra-compute-sudoer: root
+no-infra-compute-uid: 1000
+
+no-infra-smtp-server: smtp.fixture.example
+no-infra-smtp-port: 587
+no-infra-smtp-username: fixture
+
+# --- postgres and wal-g ------------------------------------------------------
+
+postgres-version: 16
+walg-version: v3.0.8
+walg-r2-bucket: airflow-fixture-backup
+walg-r2-endpoint: https://fixture.eu.r2.cloudflarestorage.com
+walg-r2-region: auto
+walg-full-backup-oncalendar: "*-*-* 02:00:00"
+walg-retain-full: 7
+walg-max-backup-age-hours: 30
+alerts-email: ops@fixture.example
+
+# --- state backends ----------------------------------------------------------
+
+s3-bucket: airflow-fixture-state
+s3-region: eu-central-1
+r2-bucket: airflow-fixture-state
+r2-endpoint: https://fixture.eu.r2.cloudflarestorage.com
