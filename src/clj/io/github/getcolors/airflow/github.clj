@@ -237,92 +237,108 @@
   (.encodeToString (java.util.Base64/getEncoder)
                    (.getBytes (str s) "UTF-8")))
 
-(def ^:private seed-retries
-  "How many times a seed write is retried, and how long between attempts.
+(def ^:private git-timeout-ms
+  "Network git, so longer than a gh call. A clone of a two-file repository is
+  fast; the ceiling is for a slow link, not a big repository."
+  120000)
 
-  Modest on purpose, and smaller than it once was. An earlier version budgeted a
-  full minute because the repeated 404s on seeding looked like a race against
-  GitHub initialising a new repository. **They were not.** Writing under
-  `.github/workflows/` requires the `workflow` OAuth scope, and GitHub reports
-  its absence as 404 rather than 403 — so the failure was permanent, retrying
-  could never have fixed it, and the timing evidence that seemed to support a
-  race was coincidence. `workflow-scope-failure?` below is what actually
-  diagnoses it.
+(defn ssh-remote
+  "The SSH URL for the DAG repository.
 
-  What remains here covers an ordinary transient: a dropped connection, a brief
-  5xx. Those are worth one or two more attempts and nothing like a minute."
-  {:times 3 :delay-ms 2000})
+  SSH, and that is the whole point of seeding this way. Writing under
+  `.github/workflows/` through the REST API requires the `workflow` OAuth scope,
+  which GitHub gates separately because a workflow file is arbitrary code
+  execution in CI with that repository's secrets. Granting it to the token this
+  package already holds would widen that token across every repository the org
+  can see — a large concession for seeding one example file, and one that cuts
+  against the posture everywhere else here, where the deploy key is write-only,
+  confined to a single directory, and has no sudo at all.
 
-(def ^:private workflow-path-prefix ".github/workflows/")
+  A git push over SSH carries no OAuth scope, so it sidesteps the question
+  entirely: the operator pushes with their own key, exactly as they would by
+  hand. COLORS_PAR_GITHUB_TOKEN stays narrow and is used only for the
+  repository, the environment and the secrets."
+  [opts]
+  (format "git@github.com:%s.git" (dags-repo opts)))
 
-(defn workflow-scope-failure?
-  "Whether a failed seed write is the `workflow` scope problem in disguise.
+(defn missing-seed-files
+  "The seed files not already present in the cloned working tree.
 
-  GitHub answers a contents write under `.github/workflows/` with 404 when the
-  token lacks the `workflow` scope — the same status it uses for a repository
-  that genuinely is not there. Two very different problems, one status code, and
-  the misleading one is the likelier: a token that could create the repository
-  and publish its secrets can obviously see it.
+  The clone is the probe, so there is no separate API round trip per file — and
+  the semantics are the ones that matter: a path that exists is never written,
+  so the operator's own `hello_world.py` survives a create even though the
+  repository is not new.
 
-  Worth detecting rather than passing 'Not Found' through, because that message
-  sent this deployment chasing a nonexistent race for two full create cycles."
-  [path err]
-  (and (str/starts-with? (str path) workflow-path-prefix)
-       (str/includes? (str err) "404")))
+  Self-healing by construction. Whatever went wrong on a previous create, the
+  next one writes exactly what is still missing. The rule this replaced fired
+  only for a repository the same run had just created, so a single failure left
+  the repository permanently empty — which is precisely what happened."
+  [dir files]
+  (vec (remove #(.exists (io/file dir (:path %))) files)))
 
-(defn seed-file-missing?
-  "Whether `path` is absent from the repository.
+(defn seed-repo!
+  "Clone, add whatever seed files are missing, commit and push over SSH.
 
-  A 404 also covers the repository not being ready yet, which is exactly the
-  window the retry above exists for — so a brand-new repository reports every
-  seed file as missing, which is correct."
-  [opts run-fn path]
-  (not (zero? (:exit (run-fn ["gh" "api" "--silent"
-                              (format "repos/%s/contents/%s" (dags-repo opts) path)]
-                             {:extra-env {"GH_TOKEN" (str (:github-token opts))}}
-                             run-timeout-ms)
-                     -1))))
+  Returns `[seeded-paths error]`. Seeding nothing is a success: a repository
+  whose seed is intact produces no commit and no push.
 
-(defn seed-commands
-  "Write the starter workflow and the hello-world DAG, one command per file.
+  The commit identity is set per invocation with `-c` rather than written into
+  the clone's config or assumed from the operator's global git configuration —
+  a create must not fail because the machine running it has no `user.email`, and
+  must not quietly author as somebody else either."
+  ([opts files] (seed-repo! opts files process/run-with-timeout))
+  ([opts files run-fn]
+   (if (empty? files)
+     [[] nil]
+     (let [dir (str (java.nio.file.Files/createTempDirectory
+                     "airflow-seed"
+                     (into-array java.nio.file.attribute.FileAttribute [])))
+           branch (or (not-empty (str (:dags-branch opts))) "main")
+           git (fn [& args] (run-fn (vec args) {} git-timeout-ms))
+           clean! (fn [] (doseq [f (reverse (file-seq (io/file dir)))]
+                           (.delete ^java.io.File f)))]
+       (try
+         (let [cloned (git "git" "clone" "--depth" "1" (ssh-remote opts) dir)]
+           (if-not (zero? (:exit cloned -1))
+             [nil (format "could not clone %s over SSH: %s\n%s"
+                          (ssh-remote opts)
+                          (str/trim (str (:err cloned)))
+                          (str "The seed is pushed with your own SSH key rather "
+                               "than the GitHub token, so this needs an SSH key "
+                               "GitHub accepts.\nCheck `ssh -T git@github.com`."))]
+             (let [missing (missing-seed-files dir files)]
+               (if (empty? missing)
+                 [[] nil]
+                 (do
+                   (doseq [{:keys [path content]} missing]
+                     (let [f (io/file dir path)]
+                       (io/make-parents f)
+                       (spit f content)))
+                   (let [staged (apply git "git" "-C" dir "add" "--"
+                                       (map :path missing))
+                         committed (when (zero? (:exit staged -1))
+                                     (git "git" "-C" dir
+                                          "-c" "user.name=colors airflow"
+                                          "-c" "user.email=airflow@getcolors.ai"
+                                          "commit" "-m"
+                                          "Seed the deploy workflow and an example DAG"))
+                         pushed (when (and committed (zero? (:exit committed -1)))
+                                  (git "git" "-C" dir "push" "origin"
+                                       (str "HEAD:" branch)))]
+                     (cond
+                       (not (zero? (:exit staged -1)))
+                       [nil (str "git add failed: " (str/trim (str (:err staged))))]
 
-  Through the contents API rather than a clone and a push: there is no working
-  tree to make, no git identity to configure, and an empty repository gets its
-  default branch from the first file written to it. `dags-branch` is named
-  explicitly so the branch the workflow syncs from is the branch that appears,
-  rather than whatever the account's default happens to be.
+                       (not (zero? (:exit committed -1)))
+                       [nil (str "git commit failed: " (str/trim (str (:err committed))))]
 
-  **Seeding is per missing file, not per newly created repository — a
-  deliberate departure from the original design.** That rule was one-shot: it
-  fired only for a repository the same run had just made, and it raced with
-  GitHub's own initialisation. When the race was lost the repository stayed
-  empty forever, because every later create saw it already existed and skipped
-  seeding. Silently, and on the one path a new user hits first.
+                       (not (zero? (:exit pushed -1)))
+                       [nil (format "could not push the seed to %s: %s"
+                                    branch (str/trim (str (:err pushed))))]
 
-  Keyed on the file instead, the seed is self-healing: whatever the race did,
-  the next create finishes the job. The property that actually matters is
-  preserved and is in fact stronger — a path that exists is never written, so
-  the operator's own `hello_world.py` is safe even though the repository is not
-  new.
-
-  What it gives up, stated because it is real: deleting a seeded file means the
-  next create puts it back. That is a nuisance, where the alternative was a
-  deployment with no deploy workflow at all."
-  [opts files]
-  (let [repo (dags-repo opts)
-        branch (or (not-empty (str (:dags-branch opts))) "main")]
-    (mapv (fn [{:keys [path content]}]
-            {:label (format "%s seed %s" repo path)
-             ;; Carried so a failure can tell the `workflow` scope problem from
-             ;; a genuine 404 — both arrive as "Not Found".
-             :path path
-             :retry seed-retries
-             :args ["gh" "api" "--method" "PUT" "--silent"
-                    (format "repos/%s/contents/%s" repo path)
-                    "-f" (str "message=Seed " path " (colors airflow)")
-                    "-f" (str "branch=" branch)
-                    "-f" (str "content=" (b64 content))]})
-          files)))
+                       :else [(mapv :path missing) nil]))))))
+           )
+         (finally (clean!)))))))
 
 (defn revoke-commands
   "The gh invocations that withdraw the deploy credentials.
@@ -351,12 +367,12 @@
   first triggers the workflow before the key it needs exists, which looks like a
   broken install on a fresh setup rather than the race it is.
 
-  `seed-files` is already narrowed to the ones missing from the repository, so
-  this stays a pure function of what it is handed."
-  [opts {:keys [exists? seed-files]}]
+  Seeding is deliberately NOT here. It happens over SSH in `seed-repo!` rather
+  than through the REST API, so it is not a `gh` invocation at all — see
+  `ssh-remote` for why."
+  [opts {:keys [exists?]}]
   (vec (concat (when-not exists? (create-repo-commands opts))
-               (mapcat #(publish-commands opts %) (:airflow/deploy-keys opts))
-               (seed-commands opts seed-files))))
+               (mapcat #(publish-commands opts %) (:airflow/deploy-keys opts)))))
 
 ;;; ------------------------------------------------------------------ the step
 
@@ -410,51 +426,28 @@
                                          (fetch-host-key opts run-fn)))
              commands (if delete?
                         (revoke-commands opts)
-                        (let [exists? (repo-exists? opts run-fn)]
-                          (create-commands
-                           opts
-                           {:exists? exists?
-                            ;; Probed rather than assumed from `exists?`. A
-                            ;; repository that exists may still be missing the
-                            ;; seed — which is precisely the state a lost race
-                            ;; leaves behind, and the state this deployment was
-                            ;; actually in.
-                            :seed-files
-                            (filterv #(seed-file-missing? opts run-fn (:path %))
-                                     (:airflow/seed-files opts))})))
+                        (create-commands opts {:exists? (repo-exists? opts run-fn)}))
              failure (reduce
-                      (fn [_ {:keys [args label retry path]}]
-                        (let [{:keys [times delay-ms] :or {times 1 delay-ms 0}} retry
-                              result (loop [attempt 1]
-                                       (let [r (run-fn (vec args)
-                                                       {:extra-env (token-env opts)}
-                                                       run-timeout-ms)]
-                                         (if (or (zero? (:exit r -1)) (>= attempt times))
-                                           r
-                                           (do (Thread/sleep delay-ms)
-                                               (recur (inc attempt))))))]
+                      (fn [_ {:keys [args label]}]
+                        (let [result (run-fn (vec args)
+                                             {:extra-env (token-env opts)}
+                                             run-timeout-ms)]
                           (if (or delete? (zero? (:exit result -1)))
                             nil
-                            (reduced
-                             (if (workflow-scope-failure? path (:err result))
-                               (format
-                                (str "cannot write %s: the GitHub token lacks the "
-                                     "`workflow` scope.\n"
-                                     "GitHub reports this as 404, not 403, so it "
-                                     "reads as \"repository not found\" — but the "
-                                     "repository is there and\neverything else in "
-                                     "this stage succeeded against it.\n"
-                                     "Add the `workflow` scope to "
-                                     "COLORS_PAR_GITHUB_TOKEN and run create "
-                                     "again. Nothing else needs redoing:\nthe seed "
-                                     "is per missing file, so it will finish the "
-                                     "job.")
-                                path)
-                               (format "gh failed for %s: %s"
-                                       label
-                                       (str/trim (str (:err result)))))))))
+                            (reduced (format "gh failed for %s: %s"
+                                             label
+                                             (str/trim (str (:err result))))))))
                       nil
                       commands)
+             ;; Seeded after the credentials and only on create, over SSH rather
+             ;; than through the API. The ordering is the same as it always was
+             ;; and is load-bearing on a first run: pushing the seed before the
+             ;; deploy key exists triggers the workflow against a repository
+             ;; that has no credentials, which looks like a broken install.
+             [_ seed-error] (if (or delete? failure)
+                              [nil nil]
+                              (seed-repo! opts (:airflow/seed-files opts) run-fn))
+             failure (or failure seed-error)
              opts (cleanup! opts)]
          (if failure
            (assoc opts :green/exit 1 :green/err failure)

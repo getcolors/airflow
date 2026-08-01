@@ -173,17 +173,20 @@ into the Caddyfile verbatim as an address to register.
 | `dags-dest` | the absolute directory rsync writes into, and Airflow scans |
 | `dags-branch` | the branch the seeded workflow syncs from |
 
-Credential: `COLORS_PAR_GITHUB_TOKEN`, which needs **both `repo` and
-`workflow`** scopes.
+Credential: `COLORS_PAR_GITHUB_TOKEN`, which needs only the `repo` scope.
 
-`workflow` is not optional and it is the one people get wrong. GitHub refuses a
-write under `.github/workflows/` from a token without it — and reports that
-refusal as **404, not 403**. So a token with `repo` alone creates the repository,
-publishes every secret and variable, and then fails to seed the deploy workflow
-with a message that reads "repository not found" about a repository it just made.
-That misdirection cost this package two full create cycles chasing a nonexistent
-race condition; the step now recognises the pattern and names the scope, but the
-fix is still to grant it.
+**Not `workflow`**, and that is deliberate. The seeded deploy workflow lives at
+`.github/workflows/deploy-dags.yml`, and writing that path through the REST API
+would require the `workflow` scope — which GitHub gates separately, because a
+workflow file is arbitrary code execution in CI with that repository's secrets.
+Granting it would widen this token across every repository the org can see, for
+the sake of one example file, and would contradict the posture everywhere else
+here: the deploy key is write-only, confined to one directory, with no sudo.
+
+So the seed is a **git push over SSH** instead. A push carries no OAuth scope,
+so the operator's own key does it, exactly as they would by hand. That needs an
+SSH key GitHub accepts — check with `ssh -T git@github.com`. The token stays
+narrow and is used only for the repository, the environment and the secrets.
 
 The repository is created **private**. DAGs carry business logic, and a public
 default is a mistake you only make once.
