@@ -568,24 +568,29 @@
     # A machine created at 09:00 with a 02:00 schedule would otherwise hold no
     # restorable backup for seventeen hours: WAL would be shipping the whole
     # time, into an archive with no base backup to replay it onto. This closes
-    # that window, and it also means walg-check has something to measure from
-    # the first hour rather than failing all of its first day.
+    # that window.
     #
-    # Guarded on the archive being empty, so it runs once per project rather
-    # than on every create.
-    - name: Look for an existing base backup
+    # The guard is `walg-check` itself rather than a second opinion about what
+    # "backed up" means. That matters more than it sounds: the first version
+    # asked whether the ARCHIVE was empty, which is a different question. The
+    # archive outlives the machine on purpose — that is what makes
+    # recreate-and-restore possible — so after a delete-and-recreate it is full
+    # of the DEAD cluster's backups, the guard saw a non-empty archive, and the
+    # rebuilt database went unbacked-up while the freshness check happily
+    # reported a healthy backup age for somebody else's data.
+    #
+    # One definition, used by the timer and by the create, and it now matches on
+    # the running cluster's system identifier.
+    - name: Ask whether THIS cluster has a recent base backup
       become_user: postgres
       ansible.builtin.command:
-        cmd: /usr/local/bin/wal-g-wrapper backup-list --json
-      register: airflow_walg_backups
+        cmd: /usr/local/bin/walg-check
+      register: airflow_walg_check
       changed_when: false
       failed_when: false
 
-    - name: Take the first base backup now
-      when: >-
-        airflow_walg_backups.rc != 0
-        or (airflow_walg_backups.stdout | trim | length) == 0
-        or (airflow_walg_backups.stdout | trim) == '[]'
+    - name: Take a base backup now
+      when: airflow_walg_check.rc != 0
       ansible.builtin.systemd_service:
         name: walg-basebackup.service
         state: started

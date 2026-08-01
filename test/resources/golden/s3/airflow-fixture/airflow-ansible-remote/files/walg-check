@@ -29,6 +29,30 @@ from datetime import datetime, timezone
 MAX_AGE_HOURS = 30
 WRAPPER = "/usr/local/bin/wal-g-wrapper"
 
+# The archive outlives the machine on purpose — that is what makes
+# recreate-and-restore possible. So it can hold base backups belonging to a
+# PREVIOUS cluster, and after a delete-and-recreate that is exactly what it
+# holds: the dead database's backups, with the live one having none.
+#
+# Checking only timestamps then reports a healthy backup age for a database
+# that has no backup at all. That is not hypothetical — it is what this machine
+# reported after its first rebuild, and it is the worst failure mode available
+# to a monitor, because silence and success look identical from outside.
+#
+# So every backup is matched against the running cluster's system identifier,
+# which Postgres assigns at initdb and WAL-G records with each base backup.
+
+
+def live_system_identifier():
+    result = subprocess.run(
+        ["psql", "-tAc", "select system_identifier from pg_control_system()"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
 # wal-g has spelled the completion time differently across versions and
 # subcommands, and this runs against whichever binary walg-version pinned.
 # Reading every candidate and taking the newest is cheaper than pinning the
@@ -60,8 +84,10 @@ def newest(backups):
 
 
 def main():
+    # --detail, because the plain listing omits system_identifier and that is
+    # the field this check now turns on.
     result = subprocess.run(
-        [WRAPPER, "backup-list", "--json"],
+        [WRAPPER, "backup-list", "--detail", "--json"],
         capture_output=True,
         text=True,
     )
@@ -90,6 +116,28 @@ def main():
             file=sys.stderr,
         )
         return 1
+
+    live = live_system_identifier()
+    if live is None:
+        print(
+            "could not read this cluster's system identifier from Postgres, so "
+            "the archive cannot be matched against it. Is the database running?",
+            file=sys.stderr,
+        )
+        return 1
+
+    mine = [b for b in backups if str(b.get("system_identifier")) == live]
+    if not mine:
+        print(
+            f"the archive holds {len(backups)} base backup(s), but NONE belong to "
+            f"the running cluster (system identifier {live}). They are a previous "
+            "cluster's — this database has no restorable backup at all.\n"
+            "That is what a rebuilt machine looks like before its first backup. "
+            "Run `systemctl start walg-basebackup.service` now.",
+            file=sys.stderr,
+        )
+        return 1
+    backups = mine
 
     latest = newest(backups)
     if latest is None:

@@ -439,3 +439,31 @@
     (is (not (re-find #"(?m)^\s*cache_valid_time:" playbook))
         "a provisioning run must always refresh the package index")
     (is (str/includes? playbook "update_cache: true"))))
+
+(deftest the-backup-check-matches-the-running-cluster
+  "The archive outlives the machine on purpose — that is what makes
+  recreate-and-restore possible — so it can hold a PREVIOUS cluster's backups.
+  After a delete-and-recreate that is exactly what it holds.
+
+  Checking only timestamps then reports a healthy backup age for a database with
+  no backup at all. This machine did precisely that after its first rebuild:
+  `walg-check` printed `newest base backup is 1.5 hours old` and exited 0, for a
+  backup belonging to the cluster that had just been destroyed. A monitor that
+  says 'fine' about data it is not protecting is the worst failure available to
+  one."
+  (let [opts (opts-in :build)
+        _ (tools/ansible-remote-step opts)
+        check (slurp-rendered opts tools/ansible-remote-tool "files/walg-check")
+        playbook (slurp-rendered opts tools/ansible-remote-tool "main.yml")]
+    (is (str/includes? check "system_identifier")
+        "the check must match backups against the running cluster")
+    (is (str/includes? check "pg_control_system()")
+        "and must read that identifier from the live database")
+    (is (str/includes? check "--detail")
+        "which the plain backup-list does not report")
+    (testing "and the create-time guard asks the same question rather than a
+              different one — an empty-archive test is what let a rebuilt
+              machine go unbacked-up"
+      (is (str/includes? playbook "/usr/local/bin/walg-check"))
+      (is (not (str/includes? playbook "airflow_walg_backups"))
+          "the old empty-archive probe must be gone"))))
