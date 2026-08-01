@@ -23,7 +23,7 @@ the source and content hash in `skills-lock.json`. Copy the launcher to your
 project root:
 
 ```sh
-cp .agents/skills/package-airflow-green/airflow ./airflow
+cp .agents/skills/package-airflow-green/green ./green
 ```
 
 The root launcher is a **copy**, not a symlink, so re-copy it after every
@@ -32,10 +32,10 @@ The root launcher is a **copy**, not a symlink, so re-copy it after every
 ## Use
 
 ```sh
-./airflow build              # render .colors/<profile>/ only; contacts nothing
-./airflow create --dry-run   # print the graph; touches nothing
-./airflow create             # provision, configure, publish the deploy key
-./airflow delete             # revoke the key, then destroy — the repo is kept
+./green build                # render .colors/<profile>/ only; contacts nothing
+./green create --dry-run     # print the graph; touches nothing
+./green create               # provision, configure, publish the deploy key
+./green delete               # revoke the key, then destroy — the repo is kept
 ```
 
 `build` and `--dry-run` render from desired state alone and need no credentials.
@@ -91,7 +91,7 @@ the convenience. The procedure is in
 ## Development
 
 ```sh
-bb airflow build            # render, from this checkout
+bb green build              # render, from this checkout
 bb test                     # the unit suite, under babashka
 bb golden                   # every provider variant vs committed output
 bb golden:accept            # regenerate after an intended change

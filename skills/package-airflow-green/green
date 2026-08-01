@@ -14,7 +14,7 @@
 ;; they carry ONCE's stage names and the profile is the ONLY thing separating
 ;; this project's state from a once-colors' in the same bucket.
 ;;
-;; This file is both the skill payload and the repository entry point — ./airflow
+;; This file is both the skill payload and the repository entry point — ./green
 ;; in the project root is a symlink to it. It deliberately holds no logic of its
 ;; own: validation, the graph and the steps all live in the `airflow` library,
 ;; where the test suite reaches them. A copied payload is the one place in this
@@ -27,7 +27,7 @@
 
 (def script-dir
   (let [file (if (= "NO_SOURCE_PATH" *file*)
-               (fs/path (fs/cwd) "airflow")
+               (fs/path (fs/cwd) "green")
                (fs/path *file*))]
     (str (fs/parent (fs/canonicalize file)))))
 
@@ -167,7 +167,7 @@
 (def commands #{"build" "create" "delete"})
 
 (def usage
-  (str "Usage: airflow <build|create|delete> [-f|--file colors.yml] [--dry-run]\n"
+  (str "Usage: green <build|create|delete> [-f|--file colors.yml] [--dry-run]\n"
        "\n"
        "  build    render the work directory only — no provider is contacted\n"
        "  create   provision the server, configure it, and publish the deploy key\n"

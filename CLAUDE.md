@@ -32,8 +32,8 @@ complete and heavily commented statement of the configuration surface.
 ## Commands
 
 ```bash
-bb airflow build                     # render the work directory only
-bb airflow create --dry-run          # print the graph, touch nothing
+bb green build                       # render the work directory only
+bb green create --dry-run            # print the graph, touch nothing
 bb test                              # the unit suite, under babashka
 bb golden                            # every provider variant vs committed output
 bb golden:accept                     # regenerate after an intended change
@@ -41,7 +41,7 @@ bb golden:accept                     # regenerate after an intended change
 bb pin                               # stamp the launcher (maintainers, after a push)
 ```
 
-`bb airflow build -f other.yml` overrides the `colors.yml` found by walking up.
+`bb green build -f other.yml` overrides the `colors.yml` found by walking up.
 
 ## The reuse surface — read this before touching anything
 
@@ -121,8 +121,7 @@ records get addresses like
 
 ```text
 create / build   start ─ compute ─ smtp ─ dns ─ smtp-post ─┬─ ansible-local
-                                                           ├─ ansible-remote
-                                                           └─ github
+                                                           └─ ansible-remote ─ github
 
 delete           start ─ github ─ ansible-cleanup ─ smtp-post ─ dns ─┬─ smtp
                                                                     └─ compute
@@ -137,9 +136,17 @@ reads the compute output out of `:green/branches` at the DNS join; running in
 series means it reads it off `opts` instead, which is the same function's second
 fallback. One less concurrency edge for no lost time.
 
-`github` runs last on create and **first** on delete. A withdrawn credential
-against a live host is a loud, recoverable broken deploy; a live credential
-against a destroyed host is silent.
+`github` runs last on create — **after `ansible-remote`, not beside it** — and
+first on delete. A withdrawn credential against a live host is a loud,
+recoverable broken deploy; a live credential against a destroyed host is silent.
+
+The edge from `ansible-remote` is load-bearing and was drawn as a fork here and
+in the plan until it broke a real deploy. Seeding pushes a commit, the commit
+triggers the deploy workflow, and that workflow rsyncs to the server with the
+key this create just issued — so run in parallel, the matching public key is not
+on the box yet and CI fails with `Permission denied (publickey)`. Both documents
+said the right thing in prose and drew the wrong thing in ASCII; the ASCII is
+what got implemented.
 
 `delete` never deletes the DAG repository. Destroying compute is recoverable
 through WAL-G; destroying the repository is not.
@@ -269,5 +276,5 @@ Consumers hold a **copy** of the payload, not a symlink, so re-copy it into ever
 project after a repin or they keep running the old pin:
 
 ```sh
-cp skills/package-airflow-green/airflow ../airflow-digitalocean/airflow
+cp skills/package-airflow-green/green ../airflow-digitalocean/green
 ```

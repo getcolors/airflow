@@ -14,7 +14,7 @@ set -euo pipefail
 # thing.
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-launcher="$root/skills/package-airflow-green/airflow"
+launcher="$root/skills/package-airflow-green/green"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -57,8 +57,8 @@ ok "carries no step, tofu, ansible or github logic"
 
 copy="$tmp/bare"
 mkdir -p "$copy"
-cp "$launcher" "$copy/airflow"
-chmod +x "$copy/airflow"
+cp "$launcher" "$copy/green"
+chmod +x "$copy/green"
 
 pin=$(grep -oE '\(def \^:private airflow-sha (nil|"[0-9a-f]{40}")\)' "$launcher" || true)
 [ -n "$pin" ] || fail "could not read the launcher's own pin declaration"
@@ -66,7 +66,7 @@ ok "declares an airflow-sha pin site"
 
 if echo "$pin" | grep -q 'nil'; then
   # Unpinned: the launcher must refuse and name the override, not guess.
-  out=$( (cd "$copy" && ./airflow build 2>&1) || true )
+  out=$( (cd "$copy" && ./green build 2>&1) || true )
   echo "$out" | grep -q 'AIRFLOW_LIB_ROOT' ||
     fail "an unpinned launcher must name AIRFLOW_LIB_ROOT; got: $out"
   ok "an unpinned launcher explains itself instead of failing obscurely"
@@ -117,7 +117,7 @@ walg-max-backup-age-hours: 30
 alerts-email: ops@example.com
 EOF
 
-out=$( (cd "$copy" && AIRFLOW_LIB_ROOT="$root" ./airflow build 2>&1) ) ||
+out=$( (cd "$copy" && AIRFLOW_LIB_ROOT="$root" ./green build 2>&1) ) ||
   fail "AIRFLOW_LIB_ROOT did not resolve the working tree: $out"
 [ -f "$copy/.colors/launcher-check/airflow-compute/main.tf" ] ||
   fail "the override resolved but rendered nothing"
@@ -130,7 +130,7 @@ ok "AIRFLOW_LIB_ROOT resolves a working tree from a copied payload"
 # its root. Only the launcher does this walk; nothing in the library can.
 
 mkdir -p "$copy/deep/nested"
-out=$( (cd "$copy/deep/nested" && AIRFLOW_LIB_ROOT="$root" ./../../airflow build 2>&1) ) ||
+out=$( (cd "$copy/deep/nested" && AIRFLOW_LIB_ROOT="$root" ./../../green build 2>&1) ) ||
   fail "running from a subdirectory failed: $out"
 [ -f "$copy/.colors/launcher-check/airflow-compute/main.tf" ] ||
   fail "a subdirectory run rendered somewhere other than beside colors.yml"
@@ -144,7 +144,7 @@ ok "finds colors.yml by walking up, and renders beside it"
 # the four OpenTofu stages carry ONCE's stage names, so the profile is the ONLY
 # thing separating this project's state from a once-colors' in a shared bucket.
 
-out=$( (cd "$copy" && AIRFLOW_LIB_ROOT="$root" COLORS_PAR_PROFILE=someone-elses ./airflow build 2>&1) || true )
+out=$( (cd "$copy" && AIRFLOW_LIB_ROOT="$root" COLORS_PAR_PROFILE=someone-elses ./green build 2>&1) || true )
 echo "$out" | grep -q 'COLORS_PAR_PROFILE' ||
   fail "COLORS_PAR_PROFILE must be refused by name; got: $out"
 if [ -d "$copy/.colors/someone-elses" ]; then
@@ -166,7 +166,7 @@ ok "launcher contract $lc is satisfied by library contract $libc"
 # --------------------------------------------------------------------------
 # Unknown verbs.
 
-out=$( (cd "$copy" && AIRFLOW_LIB_ROOT="$root" ./airflow frobnicate 2>&1) || true )
+out=$( (cd "$copy" && AIRFLOW_LIB_ROOT="$root" ./green frobnicate 2>&1) || true )
 echo "$out" | grep -q 'Usage:' || fail "an unknown verb should print usage; got: $out"
 ok "an unknown verb prints usage"
 
@@ -179,7 +179,7 @@ ok "every verb the workflow implements is dispatchable"
 # empty for every provider this package supports. A launcher that accepted them
 # would dispatch into a graph that has no such branch.
 for verb in stop start; do
-  out=$( (cd "$copy" && AIRFLOW_LIB_ROOT="$root" ./airflow "$verb" 2>&1) || true )
+  out=$( (cd "$copy" && AIRFLOW_LIB_ROOT="$root" ./green "$verb" 2>&1) || true )
   echo "$out" | grep -q 'Usage:' ||
     fail "$verb should not be dispatchable; got: $out"
 done

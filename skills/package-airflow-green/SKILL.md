@@ -22,7 +22,7 @@ ambient AWS credential chain.
 
 - Never ask the user to paste a secret into chat.
 - Never put API tokens, passwords, private keys, Fernet keys or access keys in
-  `colors.yml`, in the `airflow` launcher, in shell history, or in generated
+  `colors.yml`, in the `green` launcher, in shell history, or in generated
   examples. Every credential arrives through a `COLORS_PAR_*` environment
   variable named after the key it fills. Suggest a gitignored `.envrc.private`,
   never an inline export a shell history records.
@@ -37,7 +37,7 @@ ambient AWS credential chain.
   successful one until a DAG uses a connection. Never regenerate it for an
   existing deployment, and make sure the user has it stored somewhere that
   survives the machine.
-- Do not overwrite an existing `airflow` launcher or `colors.yml` without
+- Do not overwrite an existing `green` launcher or `colors.yml` without
   explicit approval. If a project is already valid, operate it rather than
   regenerating it.
 - Default to `build` and `create --dry-run`. Run a real `create` or `delete`
@@ -61,10 +61,10 @@ generating or changing desired state, and before any real `create` or `delete`.
 ## Commands
 
 ```sh
-./airflow build              # render .colors/<profile>/ only; contacts nothing
-./airflow create --dry-run   # print the graph; touches nothing
-./airflow create             # provision, configure, and publish the deploy key
-./airflow delete             # revoke the key, then destroy — the repo is kept
+./green build                # render .colors/<profile>/ only; contacts nothing
+./green create --dry-run     # print the graph; touches nothing
+./green create               # provision, configure, and publish the deploy key
+./green delete               # revoke the key, then destroy — the repo is kept
 ```
 
 `-f/--file` overrides the `colors.yml` found by walking up from the working
