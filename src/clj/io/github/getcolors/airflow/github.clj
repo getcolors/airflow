@@ -174,14 +174,24 @@
       (known-hosts-line (:ip opts) (:out result)))))
 
 (defn create-repo-commands
-  "Bring the repository into being, private.
+  "Bring the repository into being, private and initialised.
 
   Private is not a default worth inheriting: DAGs carry business logic, and a
   public one is a mistake you only make once. `--private` is passed explicitly
-  so the account's own default repository visibility cannot make this public."
+  so the account's own default repository visibility cannot make this public.
+
+  `--add-readme` is not decoration. Without it `gh repo create` leaves a
+  repository with no commits and no branch, and the contents API refuses writes
+  to it for the best part of a minute afterwards — which is what left the first
+  real deployment with an empty DAG repository. Creating it with an initial
+  commit means the branch exists and the repository is initialised by the time
+  the command returns, so the seed writes below have something to append to.
+
+  The retry on those writes stays regardless. This makes the wait unnecessary;
+  the retry is what covers it if that stops being true."
   [opts]
   [{:label (format "create %s" (dags-repo opts))
-    :args ["gh" "repo" "create" (dags-repo opts) "--private"
+    :args ["gh" "repo" "create" (dags-repo opts) "--private" "--add-readme"
            "--description" (format "Airflow DAGs for %s, deployed by colors"
                                    (:airflow-host opts))]}])
 
@@ -239,8 +249,17 @@
 
   Retried rather than preceded by a fixed sleep, because the delay is GitHub's
   and not knowable — and a sleep long enough to be safe is one nobody wants on
-  every create."
-  {:times 6 :delay-ms 2500})
+  every create.
+
+  The budget is a minute, and it is set from measurement rather than taste. A
+  first attempt at fifteen seconds was not enough: a repository created at
+  11:41:24 still refused a write through the whole retry window, and accepted
+  one at 11:42:35 — seventy-one seconds later. `--add-readme` below is what
+  should make the wait unnecessary; this is what covers it when it does not.
+
+  A minute is affordable because it is only ever spent once, on the create that
+  makes the repository, inside a run that already takes five."
+  {:times 12 :delay-ms 5000})
 
 (defn seed-file-missing?
   "Whether `path` is absent from the repository.

@@ -77,7 +77,12 @@
       (is (< (index "SSH_PRIVATE_KEY") (index "seed")))))
   (testing "and the repository is created private, explicitly rather than by
             inheriting the account default"
-    (is (str/includes? (flat (github/create-repo-commands (fixture))) "--private"))))
+    (is (str/includes? (flat (github/create-repo-commands (fixture))) "--private")))
+  (testing "and initialised, so the contents API will accept the seed writes
+            that follow — an uninitialised repository refuses them for the best
+            part of a minute, which is what left the first real deployment with
+            an empty DAG repository"
+    (is (str/includes? (flat (github/create-repo-commands (fixture))) "--add-readme"))))
 
 (deftest a-lost-race-is-repaired-by-the-next-create
   "The failure this rule exists for, and it is not hypothetical.
