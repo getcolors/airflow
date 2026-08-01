@@ -39,7 +39,7 @@ this document; between them they are the specification.
 | `ansible-remote` stage | done — playbook syntax-checks under ansible-core 2.21 |
 | `github.clj` | done |
 | `workflow.clj`, launcher, skill payload | done — `./scripts/launcher.sh`, 11 checks |
-| tests | done — `bb test`, 78 tests / 252 assertions |
+| tests | done — `bb test`, 85 tests / 295 assertions |
 | `scripts/golden.sh` | done — 10 variants + 16 assertions |
 | a real `create` | **run — Airflow is live and serving**; see "What only a real create found" |
 | the DAG deploy path | **blocked** — needs `workflow` scope on `COLORS_PAR_GITHUB_TOKEN` |
