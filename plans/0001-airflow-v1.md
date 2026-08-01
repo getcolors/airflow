@@ -74,8 +74,7 @@ walter both use.
 
 ```text
 create / build   start ─ compute ─ smtp ─ dns ─ smtp-post ─┬─ ansible-local
-                                                           ├─ ansible-remote
-                                                           └─ github
+                                                           └─ ansible-remote ─ github
 
 delete           start ─ github ─ ansible-cleanup ─ smtp-post ─ dns ─┬─ smtp
                                                                      └─ compute
@@ -94,7 +93,15 @@ SMTP stage is an API call, not a machine build.
 
 `github` runs last on create, after `ansible-remote`, for ONCE's reason: the
 credentials it publishes describe a configured host, and a workstation-side
-failure should not gate them. On delete it runs **first**, revoking before
+failure should not gate them.
+
+**The diagram above drew a three-way fork until the sixth create, and the fork
+is what got built** — prose and picture disagreed, and the picture won. It cost
+a real failure: seeding pushes a commit, the commit triggers the deploy
+workflow, and the workflow rsyncs to the server with the key that create just
+issued. Forked beside `ansible-remote`, the matching public key was not on the
+box yet, and CI failed with `Permission denied (publickey)`. Sequencing costs
+nothing — github is seconds where ansible-remote is minutes. On delete it runs **first**, revoking before
 anything is destroyed — a withdrawn credential against a live host is a loud,
 recoverable broken deploy, while a live credential against a destroyed host is
 silent.

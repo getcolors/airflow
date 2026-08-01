@@ -124,12 +124,22 @@
       (is (= [:airflow/dns] (:airflow/smtp g)))
       (is (= [:airflow/smtp-post] (:airflow/dns g))))))
 
-(deftest create-forks-into-the-two-ansible-stages-and-github
+(deftest github-follows-ansible-remote-rather-than-forking-beside-it
+  "The seed push triggers the deploy workflow, and that workflow rsyncs to the
+  server with the key this create just issued. Run in parallel with
+  `ansible-remote`, the matching public key is not on the box yet and CI fails
+  with `Permission denied (publickey)` on every create that seeds.
+
+  That is not hypothetical — it is what the first successful seed did. The plan
+  said `github` runs after `ansible-remote` in prose and drew a three-way fork
+  in its diagram; the fork is what got built."
   (let [g (graph :create)]
-    (is (= [:airflow/ansible-local :airflow/ansible-remote :airflow/github]
-           (:airflow/smtp-post g)))
+    (is (= [:airflow/ansible-local :airflow/ansible-remote]
+           (:airflow/smtp-post g))
+        "smtp-post forks into the two Ansible stages only")
+    (is (= [:airflow/github] (:airflow/ansible-remote g))
+        "and github waits for the machine to have the key")
     (is (= [] (:airflow/ansible-local g)))
-    (is (= [] (:airflow/ansible-remote g)))
     (is (= [] (:airflow/github g)))))
 
 (deftest delete-revokes-first-and-destroys-last

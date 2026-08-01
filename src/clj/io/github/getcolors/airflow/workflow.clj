@@ -179,10 +179,23 @@
       :airflow/dns            [tools/dns-step :airflow/smtp-post]
       :airflow/smtp-post      [tools/smtp-post-step
                                :airflow/ansible-local
-                               :airflow/ansible-remote
-                               :airflow/github]
+                               :airflow/ansible-remote]
       :airflow/ansible-local  [tools/ansible-local-step]
-      :airflow/ansible-remote [tools/ansible-remote-step]
+      ;; github follows ansible-remote rather than forking beside it, which is
+      ;; ONCE's wiring and what this package's plan says in prose — while its
+      ;; ASCII diagram drew a three-way fork, and the fork is what got built.
+      ;;
+      ;; The consequence was not theoretical. Seeding the repository pushes a
+      ;; commit, that commit triggers the deploy workflow, and the workflow
+      ;; immediately rsyncs to the server with the key this create just issued.
+      ;; Run in parallel, `ansible-remote` has not yet installed the matching
+      ;; public key, so CI fails with `Permission denied (publickey)` on every
+      ;; create that seeds — a broken-looking deploy on the one path a new user
+      ;; hits first.
+      ;;
+      ;; Sequencing costs nothing: the two never ran concurrently for long
+      ;; anyway, since github is seconds and ansible-remote is minutes.
+      :airflow/ansible-remote [tools/ansible-remote-step :airflow/github]
       :airflow/github         [github-step])))
 
 ;; ---------------------------------------------------------------------------
