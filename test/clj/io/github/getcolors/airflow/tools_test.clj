@@ -420,3 +420,22 @@
       (testing "while still doing the useful half — removing the rendered tree"
         (is (not (.exists (io/file (tools/tool-dir opts tools/github-tool)
                                    "seed/dags/hello_world.py"))))))))
+
+(deftest the-package-cache-is-never-trusted-stale
+  "A cloud image ships a package index built when the image was, and cloud-init
+  touches it on first boot — so the cache looks fresh while listing versions the
+  archive has already superseded and deleted. `cache_valid_time` then skips the
+  refresh and apt fetches a .deb that 404s.
+
+  This play succeeded and then failed ninety minutes later on a new droplet for
+  exactly that reason. No test could have predicted the timing; what a test can
+  do is keep the flag from coming back."
+  (let [opts (opts-in :build)
+        _ (tools/ansible-remote-step opts)
+        playbook (slurp-rendered opts tools/ansible-remote-tool "main.yml")]
+    ;; The KEY, not the word: the task's own comment explains why the flag is
+    ;; absent and therefore contains it. A guard that cannot tell a directive
+    ;; from prose about the directive fails on its own documentation.
+    (is (not (re-find #"(?m)^\s*cache_valid_time:" playbook))
+        "a provisioning run must always refresh the package index")
+    (is (str/includes? playbook "update_cache: true"))))

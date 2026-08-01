@@ -80,8 +80,18 @@
           # which is what stops a salted bcrypt run producing a different value
           # on every converge and bouncing the web server for no reason.
           - apache2-utils
+        # Always refreshed, never trusted for an hour. A cloud image ships a
+        # package index built when the image was, and cloud-init touches it on
+        # first boot — so the cache LOOKS fresh while listing versions the
+        # archive has already superseded and deleted. `cache_valid_time` then
+        # skips the update and apt fetches a .deb that 404s.
+        #
+        # That is not a hypothetical staleness window. This exact play succeeded
+        # and then failed ninety minutes later on a new droplet, because
+        # apache2-utils moved and the old package was pulled from the mirror in
+        # between. A few seconds of `apt-get update` is nothing against a
+        # five-minute play, and it removes the whole class.
         update_cache: true
-        cache_valid_time: 3600
 
     # ---------------------------------------------------------------- docker
     #
