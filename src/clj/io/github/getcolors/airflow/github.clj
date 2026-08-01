@@ -240,26 +240,35 @@
 (def ^:private seed-retries
   "How many times a seed write is retried, and how long between attempts.
 
-  A repository is not immediately usable through the contents API after
-  `gh repo create` — a PUT issued straight afterwards returns 404 while GitHub
-  finishes initialising it. That is not theoretical: it is what left the first
-  real deployment with a created, private, and completely empty DAG repository,
-  and the error was invisible because the parallel `ansible-remote` branch
-  failed in the same run and its message won.
+  Modest on purpose, and smaller than it once was. An earlier version budgeted a
+  full minute because the repeated 404s on seeding looked like a race against
+  GitHub initialising a new repository. **They were not.** Writing under
+  `.github/workflows/` requires the `workflow` OAuth scope, and GitHub reports
+  its absence as 404 rather than 403 — so the failure was permanent, retrying
+  could never have fixed it, and the timing evidence that seemed to support a
+  race was coincidence. `workflow-scope-failure?` below is what actually
+  diagnoses it.
 
-  Retried rather than preceded by a fixed sleep, because the delay is GitHub's
-  and not knowable — and a sleep long enough to be safe is one nobody wants on
-  every create.
+  What remains here covers an ordinary transient: a dropped connection, a brief
+  5xx. Those are worth one or two more attempts and nothing like a minute."
+  {:times 3 :delay-ms 2000})
 
-  The budget is a minute, and it is set from measurement rather than taste. A
-  first attempt at fifteen seconds was not enough: a repository created at
-  11:41:24 still refused a write through the whole retry window, and accepted
-  one at 11:42:35 — seventy-one seconds later. `--add-readme` below is what
-  should make the wait unnecessary; this is what covers it when it does not.
+(def ^:private workflow-path-prefix ".github/workflows/")
 
-  A minute is affordable because it is only ever spent once, on the create that
-  makes the repository, inside a run that already takes five."
-  {:times 12 :delay-ms 5000})
+(defn workflow-scope-failure?
+  "Whether a failed seed write is the `workflow` scope problem in disguise.
+
+  GitHub answers a contents write under `.github/workflows/` with 404 when the
+  token lacks the `workflow` scope — the same status it uses for a repository
+  that genuinely is not there. Two very different problems, one status code, and
+  the misleading one is the likelier: a token that could create the repository
+  and publish its secrets can obviously see it.
+
+  Worth detecting rather than passing 'Not Found' through, because that message
+  sent this deployment chasing a nonexistent race for two full create cycles."
+  [path err]
+  (and (str/starts-with? (str path) workflow-path-prefix)
+       (str/includes? (str err) "404")))
 
 (defn seed-file-missing?
   "Whether `path` is absent from the repository.
@@ -304,6 +313,9 @@
         branch (or (not-empty (str (:dags-branch opts))) "main")]
     (mapv (fn [{:keys [path content]}]
             {:label (format "%s seed %s" repo path)
+             ;; Carried so a failure can tell the `workflow` scope problem from
+             ;; a genuine 404 — both arrive as "Not Found".
+             :path path
              :retry seed-retries
              :args ["gh" "api" "--method" "PUT" "--silent"
                     (format "repos/%s/contents/%s" repo path)
@@ -411,7 +423,7 @@
                             (filterv #(seed-file-missing? opts run-fn (:path %))
                                      (:airflow/seed-files opts))})))
              failure (reduce
-                      (fn [_ {:keys [args label retry]}]
+                      (fn [_ {:keys [args label retry path]}]
                         (let [{:keys [times delay-ms] :or {times 1 delay-ms 0}} retry
                               result (loop [attempt 1]
                                        (let [r (run-fn (vec args)
@@ -423,9 +435,24 @@
                                                (recur (inc attempt))))))]
                           (if (or delete? (zero? (:exit result -1)))
                             nil
-                            (reduced (format "gh failed for %s: %s"
-                                             label
-                                             (str/trim (str (:err result))))))))
+                            (reduced
+                             (if (workflow-scope-failure? path (:err result))
+                               (format
+                                (str "cannot write %s: the GitHub token lacks the "
+                                     "`workflow` scope.\n"
+                                     "GitHub reports this as 404, not 403, so it "
+                                     "reads as \"repository not found\" — but the "
+                                     "repository is there and\neverything else in "
+                                     "this stage succeeded against it.\n"
+                                     "Add the `workflow` scope to "
+                                     "COLORS_PAR_GITHUB_TOKEN and run create "
+                                     "again. Nothing else needs redoing:\nthe seed "
+                                     "is per missing file, so it will finish the "
+                                     "job.")
+                                path)
+                               (format "gh failed for %s: %s"
+                                       label
+                                       (str/trim (str (:err result)))))))))
                       nil
                       commands)
              opts (cleanup! opts)]

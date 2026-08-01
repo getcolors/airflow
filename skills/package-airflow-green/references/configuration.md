@@ -173,7 +173,17 @@ into the Caddyfile verbatim as an address to register.
 | `dags-dest` | the absolute directory rsync writes into, and Airflow scans |
 | `dags-branch` | the branch the seeded workflow syncs from |
 
-Credential: `COLORS_PAR_GITHUB_TOKEN`.
+Credential: `COLORS_PAR_GITHUB_TOKEN`, which needs **both `repo` and
+`workflow`** scopes.
+
+`workflow` is not optional and it is the one people get wrong. GitHub refuses a
+write under `.github/workflows/` from a token without it — and reports that
+refusal as **404, not 403**. So a token with `repo` alone creates the repository,
+publishes every secret and variable, and then fails to seed the deploy workflow
+with a message that reads "repository not found" about a repository it just made.
+That misdirection cost this package two full create cycles chasing a nonexistent
+race condition; the step now recognises the pattern and names the scope, but the
+fix is still to grant it.
 
 The repository is created **private**. DAGs carry business logic, and a public
 default is a mistake you only make once.

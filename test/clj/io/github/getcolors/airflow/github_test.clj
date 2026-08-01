@@ -105,6 +105,43 @@
     (is (str/includes? text "contents/dags/hello.py")
         "but the file that never landed is written now")))
 
+(deftest the-workflow-scope-failure-is-named-rather-than-passed-through
+  "GitHub answers a contents write under `.github/workflows/` with 404 when the
+  token lacks the `workflow` scope — the same status as a repository that is
+  genuinely absent. Two very different problems, one status code.
+
+  The misleading reading is also the likelier one: a token that just created the
+  repository and published its secrets can obviously see it. Passing 'Not Found'
+  through sent this deployment chasing a nonexistent race for two full create
+  cycles, so the error now says what it actually is."
+  (is (github/workflow-scope-failure? ".github/workflows/deploy-dags.yml"
+                                      "gh: Not Found (HTTP 404)"))
+  (testing "and does not mistake an ordinary 404 for it"
+    (is (not (github/workflow-scope-failure? "dags/hello_world.py"
+                                             "gh: Not Found (HTTP 404)")))
+    (is (not (github/workflow-scope-failure? ".github/workflows/deploy-dags.yml"
+                                             "gh: Bad credentials (HTTP 401)"))))
+  (testing "and the step's message names the scope and the variable to fix"
+    (let [result (github/github-step
+                  (assoc (with-keys)
+                         :green/event :create
+                         :airflow/seed-files [{:path ".github/workflows/deploy-dags.yml"
+                                               :content "x"}])
+                  (fn [args _ _]
+                    (let [cmd (str/join " " args)]
+                      (cond
+                        (str/includes? cmd "repo view") {:exit 0 :out "" :err ""}
+                        (and (str/includes? cmd "--method PUT")
+                             (str/includes? cmd "contents/"))
+                        {:exit 1 :out "" :err "gh: Not Found (HTTP 404)"}
+                        (str/includes? cmd "contents/") {:exit 1 :out "" :err "Not Found"}
+                        :else {:exit 0 :out "" :err ""}))))]
+      (is (= 1 (:green/exit result)))
+      (is (str/includes? (:green/err result) "workflow"))
+      (is (str/includes? (:green/err result) "COLORS_PAR_GITHUB_TOKEN"))
+      (is (str/includes? (:green/err result) "404")
+          "and explains why the status is misleading"))))
+
 (deftest a-file-that-exists-is-never-written
   "The property that actually matters, and it is stronger than the rule it
   replaced: a path present in the repository is not written even though the
