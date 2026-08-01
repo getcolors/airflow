@@ -227,9 +227,36 @@
   (.encodeToString (java.util.Base64/getEncoder)
                    (.getBytes (str s) "UTF-8")))
 
+(def ^:private seed-retries
+  "How many times a seed write is retried, and how long between attempts.
+
+  A repository is not immediately usable through the contents API after
+  `gh repo create` — a PUT issued straight afterwards returns 404 while GitHub
+  finishes initialising it. That is not theoretical: it is what left the first
+  real deployment with a created, private, and completely empty DAG repository,
+  and the error was invisible because the parallel `ansible-remote` branch
+  failed in the same run and its message won.
+
+  Retried rather than preceded by a fixed sleep, because the delay is GitHub's
+  and not knowable — and a sleep long enough to be safe is one nobody wants on
+  every create."
+  {:times 6 :delay-ms 2500})
+
+(defn seed-file-missing?
+  "Whether `path` is absent from the repository.
+
+  A 404 also covers the repository not being ready yet, which is exactly the
+  window the retry above exists for — so a brand-new repository reports every
+  seed file as missing, which is correct."
+  [opts run-fn path]
+  (not (zero? (:exit (run-fn ["gh" "api" "--silent"
+                              (format "repos/%s/contents/%s" (dags-repo opts) path)]
+                             {:extra-env {"GH_TOKEN" (str (:github-token opts))}}
+                             run-timeout-ms)
+                     -1))))
+
 (defn seed-commands
-  "Put the starter workflow and the hello-world DAG in a repository this run has
-  just created.
+  "Write the starter workflow and the hello-world DAG, one command per file.
 
   Through the contents API rather than a clone and a push: there is no working
   tree to make, no git identity to configure, and an empty repository gets its
@@ -237,14 +264,28 @@
   explicitly so the branch the workflow syncs from is the branch that appears,
   rather than whatever the account's default happens to be.
 
-  Only ever called for a repository this create made. A converging seed would
-  overwrite the operator's DAGs with the example, which is the one thing this
-  step must never do."
+  **Seeding is per missing file, not per newly created repository — a
+  deliberate departure from the original design.** That rule was one-shot: it
+  fired only for a repository the same run had just made, and it raced with
+  GitHub's own initialisation. When the race was lost the repository stayed
+  empty forever, because every later create saw it already existed and skipped
+  seeding. Silently, and on the one path a new user hits first.
+
+  Keyed on the file instead, the seed is self-healing: whatever the race did,
+  the next create finishes the job. The property that actually matters is
+  preserved and is in fact stronger — a path that exists is never written, so
+  the operator's own `hello_world.py` is safe even though the repository is not
+  new.
+
+  What it gives up, stated because it is real: deleting a seeded file means the
+  next create puts it back. That is a nuisance, where the alternative was a
+  deployment with no deploy workflow at all."
   [opts files]
   (let [repo (dags-repo opts)
         branch (or (not-empty (str (:dags-branch opts))) "main")]
     (mapv (fn [{:keys [path content]}]
             {:label (format "%s seed %s" repo path)
+             :retry seed-retries
              :args ["gh" "api" "--method" "PUT" "--silent"
                     (format "repos/%s/contents/%s" repo path)
                     "-f" (str "message=Seed " path " (colors airflow)")
@@ -277,11 +318,14 @@
   The ordering is load-bearing on a first run, and it is the reverse of what
   reads naturally: repository, then credentials, then seed. Pushing the seed
   first triggers the workflow before the key it needs exists, which looks like a
-  broken install on a fresh setup rather than the race it is."
+  broken install on a fresh setup rather than the race it is.
+
+  `seed-files` is already narrowed to the ones missing from the repository, so
+  this stays a pure function of what it is handed."
   [opts {:keys [exists? seed-files]}]
   (vec (concat (when-not exists? (create-repo-commands opts))
                (mapcat #(publish-commands opts %) (:airflow/deploy-keys opts))
-               (when-not exists? (seed-commands opts seed-files)))))
+               (seed-commands opts seed-files))))
 
 ;;; ------------------------------------------------------------------ the step
 
@@ -335,15 +379,29 @@
                                          (fetch-host-key opts run-fn)))
              commands (if delete?
                         (revoke-commands opts)
-                        (create-commands
-                         opts
-                         {:exists? (repo-exists? opts run-fn)
-                          :seed-files (:airflow/seed-files opts)}))
+                        (let [exists? (repo-exists? opts run-fn)]
+                          (create-commands
+                           opts
+                           {:exists? exists?
+                            ;; Probed rather than assumed from `exists?`. A
+                            ;; repository that exists may still be missing the
+                            ;; seed — which is precisely the state a lost race
+                            ;; leaves behind, and the state this deployment was
+                            ;; actually in.
+                            :seed-files
+                            (filterv #(seed-file-missing? opts run-fn (:path %))
+                                     (:airflow/seed-files opts))})))
              failure (reduce
-                      (fn [_ {:keys [args label]}]
-                        (let [result (run-fn (vec args)
-                                             {:extra-env (token-env opts)}
-                                             run-timeout-ms)]
+                      (fn [_ {:keys [args label retry]}]
+                        (let [{:keys [times delay-ms] :or {times 1 delay-ms 0}} retry
+                              result (loop [attempt 1]
+                                       (let [r (run-fn (vec args)
+                                                       {:extra-env (token-env opts)}
+                                                       run-timeout-ms)]
+                                         (if (or (zero? (:exit r -1)) (>= attempt times))
+                                           r
+                                           (do (Thread/sleep delay-ms)
+                                               (recur (inc attempt))))))]
                           (if (or delete? (zero? (:exit result -1)))
                             nil
                             (reduced (format "gh failed for %s: %s"
