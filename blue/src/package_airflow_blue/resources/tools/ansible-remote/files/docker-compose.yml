@@ -18,7 +18,10 @@
 x-airflow-common: &airflow-common
   image: <{ airflow-image }>
   env_file:
-    - <{ airflow-conf-dir }>/airflow.env
+    # Raw is load-bearing: Fernet keys and passwords may contain `$`, which
+    # Compose otherwise treats as interpolation and silently truncates.
+    - path: <{ airflow-conf-dir }>/airflow.env
+      format: raw
   # The uid the image's own `airflow` user has. Named rather than left to the
   # image default because the logs directory below is bind-mounted from the host
   # and has to be chowned to something, and this is that something.
@@ -70,6 +73,10 @@ services:
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
+    environment:
+      # Enables the scheduler's dedicated health server on the port checked
+      # below. Without it the scheduler runs, but Docker marks it unhealthy.
+      AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "True"
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
       interval: 30s
@@ -121,7 +128,10 @@ services:
   caddy:
     image: <{ caddy-image }>
     env_file:
-      - <{ airflow-conf-dir }>/caddy.env
+      # The bcrypt hash contains `$`; raw prevents Compose from interpreting
+      # its segments as environment-variable references.
+      - path: <{ airflow-conf-dir }>/caddy.env
+        format: raw
     ports:
       # 80 as well as 443. Caddy answers the ACME HTTP-01 challenge there, and
       # Cloudflare does not apply Always Use HTTPS to /.well-known/acme-challenge/

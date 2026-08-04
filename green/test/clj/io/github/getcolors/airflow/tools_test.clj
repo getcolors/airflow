@@ -357,6 +357,10 @@
           "no published port for the api-server, not even one bound to localhost")
       (is (re-find #"(?m)^\s+- \"80:80\"" compose)
           "only Caddy publishes ports, and 80 is the ACME challenge")
+      (is (= 2 (count (re-seq #"format: raw" compose)))
+          "Compose must not interpolate dollar signs in passwords or bcrypt hashes")
+      (is (str/includes? compose "AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: \"True\"")
+          "the scheduler health endpoint must be enabled when its port is checked")
       (testing "so the only route in is Caddy addressing it by service name"
         (is (str/includes? caddyfile "reverse_proxy airflow-apiserver:8080"))))))
 
