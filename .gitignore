@@ -3,6 +3,10 @@
 .clj-kondo/.cache/
 .lsp/.cache/
 target/
+node_modules/
+.venv/
+__pycache__/
+*.pyc
 .direnv/
 .devenv/
 .envrc.private

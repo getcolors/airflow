@@ -51,7 +51,7 @@ build_variant() {
   local variant=$1
   shift
   (
-    cd "$root"
+    cd "$root/green"
     env COLORS_PAR_WORKDIR="$tmp/$variant" "$@" bb green build -f "$state" >/dev/null
   )
   if [ "$accept" = 1 ]; then
@@ -71,6 +71,9 @@ build_variant() {
 # Every compute provider ONCE's registry offers, because this package fills all
 # four provider slots and any of them can be selected by a consumer.
 build_variant digitalocean
+build_variant azure COLORS_PAR_PROVIDER_COMPUTE=azure
+build_variant aws COLORS_PAR_PROVIDER_COMPUTE=aws
+build_variant google COLORS_PAR_PROVIDER_COMPUTE=google
 build_variant hcloud COLORS_PAR_PROVIDER_COMPUTE=hcloud
 build_variant oci COLORS_PAR_PROVIDER_COMPUTE=oci
 build_variant yandex COLORS_PAR_PROVIDER_COMPUTE=yandex

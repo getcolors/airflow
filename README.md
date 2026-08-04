@@ -9,8 +9,8 @@ pushed to it from a GitHub Actions workflow over rsync, using a disposable deplo
 key confined by an `rrsync` ForceCommand.
 
 It is a **Package Skill** on the [Colors](https://github.com/getcolors) SDK — an
-agent-installable CLI — and the third after ONCE and walter. Like walter it is
-green only.
+agent-installable CLI — and the third after ONCE and walter. It has interchangeable
+Green (Clojure), Red (TypeScript), and Blue (Python) implementations.
 
 ## Install
 
@@ -18,13 +18,16 @@ green only.
 npx skills add getcolors/airflow
 ```
 
-That writes `.agents/skills/package-airflow-green/` into your project and records
-the source and content hash in `skills-lock.json`. Copy the launcher to your
-project root:
+That installs the three Package Skills. Copy their launchers to your project root:
 
 ```sh
 cp .agents/skills/package-airflow-green/green ./green
+cp .agents/skills/package-airflow-red/red ./red
+cp .agents/skills/package-airflow-blue/blue ./blue
 ```
+
+All three read the same `colors.yml`, generate byte-identical artifacts, and can
+converge the same OpenTofu state. Do not run them concurrently.
 
 The root launcher is a **copy**, not a symlink, so re-copy it after every
 `npx skills update -p` or the project keeps running the old pin.
@@ -91,12 +94,12 @@ the convenience. The procedure is in
 ## Development
 
 ```sh
-bb green build              # render, from this checkout
-bb test                     # the unit suite, under babashka
-bb golden                   # every provider variant vs committed output
-bb golden:accept            # regenerate after an intended change
-./scripts/launcher.sh       # the launcher, outside this checkout
-bb pin                      # stamp the launcher (maintainers, after a push)
+cd green && bb test && bb golden
+cd red && bun install && bun test && bun run typecheck
+cd blue && uv sync && uv run pytest -q
+./scripts/parity.sh
+./scripts/launcher.sh
+cd green && bb pin          # maintainers, after a push
 ```
 
 `bb golden` is the regression net for this package's dependency on ONCE, which is

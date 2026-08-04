@@ -72,7 +72,7 @@
 
 (def ^:private bootstrap-error
   (when (and (System/getProperty "babashka.version") (not resolved?))
-    (let [airflow (lib-coord "AIRFLOW_LIB_ROOT" airflow-git-url airflow-sha nil)
+    (let [airflow (lib-coord "AIRFLOW_LIB_ROOT" airflow-git-url airflow-sha "green")
           once (lib-coord "ONCE_LIB_ROOT" once-git-url nil "green")
           green (lib-coord "GREEN_LIB_ROOT" green-git-url nil nil)]
       (if-not airflow

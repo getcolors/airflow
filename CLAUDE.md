@@ -11,8 +11,9 @@ metadata database, continuous archiving to R2 with WAL-G, TLS and authentication
 through Caddy, and a public hostname behind Cloudflare. DAGs are pushed to it
 from a GitHub Actions workflow over rsync, using a disposable deploy key.
 
-It is the third Package Skill on the Colors SDK, after ONCE and walter, and like
-walter it is **green only** — no red, no blue, no parity harness.
+It is the third Package Skill on the Colors SDK, after ONCE and walter. It has
+three interchangeable implementations: `green/` (Clojure), `red/` (TypeScript),
+and `blue/` (Python), with byte-identical output enforced by `scripts/parity.sh`.
 
 `plans/0001-airflow-v1.md` records why the design is what it is, including the
 alternatives that were rejected and why. It is history, not specification — read
@@ -32,16 +33,16 @@ complete and heavily commented statement of the configuration surface.
 ## Commands
 
 ```bash
-bb green build                       # render the work directory only
-bb green create --dry-run            # print the graph, touch nothing
-bb test                              # the unit suite, under babashka
-bb golden                            # every provider variant vs committed output
-bb golden:accept                     # regenerate after an intended change
-./scripts/launcher.sh                # the launcher, in environments this checkout is not
-bb pin                               # stamp the launcher (maintainers, after a push)
+cd green && bb green build
+cd green && bb test && bb golden
+cd red && bun install && bun test && bun run typecheck
+cd blue && uv sync && uv run pytest -q
+./scripts/parity.sh
+./scripts/launcher.sh
+cd green && bb pin
 ```
 
-`bb green build -f other.yml` overrides the `colors.yml` found by walking up.
+`cd green && bb green build -f other.yml` overrides the `colors.yml` found by walking up.
 
 ## The reuse surface — read this before touching anything
 
@@ -277,4 +278,6 @@ project after a repin or they keep running the old pin:
 
 ```sh
 cp skills/package-airflow-green/green ../airflow-digitalocean/green
+cp skills/package-airflow-red/red ../airflow-digitalocean/red
+cp skills/package-airflow-blue/blue ../airflow-digitalocean/blue
 ```

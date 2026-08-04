@@ -1,0 +1,31 @@
+---
+# This package's own copy of the local stage, not ONCE's and not walter's.
+#
+# ONCE's playbook is reusable and this copies it anyway, for the reason walter
+# gives: it writes to ~/.ssh/config on the operator's workstation, so reusing it
+# would mean an unrelated change in ONCE — an added IdentityFile, a ProxyJump —
+# rewriting that file at pin-bump time. Everything else in this package leans on
+# ONCE as hard as it can; this is the one place where three small files are the
+# better trade.
+#
+# The marker carries `airflow`, so a collision with ONCE's block or walter's is
+# impossible rather than merely unlikely: all three derive their alias from
+# `profile`, and nothing enforces that two projects chose different ones.
+#
+# Variables here are Ansible's, not Selmer's — they arrive as extra-vars.
+- name: Managed local configuration
+  hosts: local
+  tasks:
+    - name: Manage SSH access for {{ host_alias }}
+      ansible.builtin.blockinfile:
+        path: ~/.ssh/config
+        marker: "# {mark} airflow {{ host_alias }} ANSIBLE MANAGED BLOCK"
+        state: "{{ block_state | default('present') }}"
+        create: yes
+        mode: "0600"
+        block: |
+          Host {{ host_alias }}
+              HostName {{ ip }}
+              User {{ user }}
+              Port 22
+              ForwardAgent yes

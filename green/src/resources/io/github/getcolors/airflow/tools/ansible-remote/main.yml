@@ -1,0 +1,880 @@
+---
+# The whole machine, in one play.
+#
+# Ordering is load-bearing in three places and each is marked where it happens:
+# Docker before Postgres (the bridge address has to exist before anything binds
+# to it), WAL-G before archiving is switched on (or Postgres starts filling
+# pg_wal with segments nothing can ship), and the deploy account last (it is the
+# only thing here reachable from the internet, and it should not open before
+# what it feeds is running).
+#
+# Facts are gathered even though ansible.cfg says `gathering = explicit`: the
+# WAL-G asset name is built from the machine's own Ubuntu version and
+# architecture. Those are properties of the machine the compute stage already
+# chose, and asking for them in colors.yml is how they come to disagree with it.
+#
+# No secret in this file is a value. Every credential is a `lookup('env', ...)`
+# resolved on the controller at play time and written into a 0600 file here, so
+# nothing sensitive passes through the rendered work directory. That is this
+# package's one departure from walter, which puts no secret on a server at all —
+# WAL-G's keys, the database password, the Fernet key, the admin password and
+# the relay password all have to be on the machine for it to work at all.
+- name: Provision the Airflow server
+  hosts: all
+  gather_facts: true
+  become: true
+
+  handlers:
+    - name: Restart docker
+      ansible.builtin.systemd_service:
+        name: docker
+        state: restarted
+
+    - name: Restart postgres
+      ansible.builtin.systemd_service:
+        name: "postgresql@<{ postgres-version }>-main"
+        state: restarted
+
+  tasks:
+    # Checked before anything is built rather than after, so a missing
+    # credential costs a failed connection rather than a half-provisioned
+    # machine with an Airflow that cannot reach its database.
+    #
+    # Deliberately not in validate.clj: `build` renders from desired state alone
+    # and must stay credential-free, so a secret only `create` needs has to be
+    # checked where `create` runs. Walter's atuin assertion is the precedent.
+    #
+    # The assertion names the variables and tests only their length; neither the
+    # message nor a failing `that:` expression can print a value.
+    - name: Refuse to provision without the credentials this machine needs
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'COLORS_PAR_POSTGRES_PASSWORD') | length > 0
+          - lookup('env', 'COLORS_PAR_AIRFLOW_FERNET_KEY') | length > 0
+          - lookup('env', 'COLORS_PAR_AIRFLOW_ADMIN_PASSWORD') | length > 0
+          - lookup('env', 'COLORS_PAR_WALG_R2_ACCESS_KEY_ID') | length > 0
+          - lookup('env', 'COLORS_PAR_WALG_R2_SECRET_ACCESS_KEY') | length > 0
+          # By name rather than by expression: the relay password's key depends
+          # on which SMTP provider was chosen, and rendering the lookup itself
+          # here would substitute the password into this assertion's own text.
+          - lookup('env', '<{ smtp-password-par }>') | length > 0
+        fail_msg: >-
+          One of COLORS_PAR_POSTGRES_PASSWORD, COLORS_PAR_AIRFLOW_FERNET_KEY,
+          COLORS_PAR_AIRFLOW_ADMIN_PASSWORD, COLORS_PAR_WALG_R2_ACCESS_KEY_ID,
+          COLORS_PAR_WALG_R2_SECRET_ACCESS_KEY or the SMTP relay password is not
+          in the environment. They belong in .envrc.private, never in colors.yml.
+        success_msg: "every credential this machine needs is in the environment"
+
+    - name: Install the base packages
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          # rrsync ships inside this package. It is what the deploy key's
+          # ForceCommand runs, and the whole reason a leaked key can do nothing
+          # but write DAGs.
+          - rsync
+          # htpasswd, for the admin password hash below. Chosen over hashing
+          # with the caddy image because it can also *verify* an existing hash,
+          # which is what stops a salted bcrypt run producing a different value
+          # on every converge and bouncing the web server for no reason.
+          - apache2-utils
+        # Always refreshed, never trusted for an hour. A cloud image ships a
+        # package index built when the image was, and cloud-init touches it on
+        # first boot — so the cache LOOKS fresh while listing versions the
+        # archive has already superseded and deleted. `cache_valid_time` then
+        # skips the update and apt fetches a .deb that 404s.
+        #
+        # That is not a hypothetical staleness window. This exact play succeeded
+        # and then failed ninety minutes later on a new droplet, because
+        # apache2-utils moved and the old package was pulled from the mirror in
+        # between. A few seconds of `apt-get update` is nothing against a
+        # five-minute play, and it removes the whole class.
+        update_cache: true
+
+    # ---------------------------------------------------------------- docker
+    #
+    # FIRST ordering constraint. Postgres binds to the bridge gateway, so the
+    # bridge has to exist, and at a known address, before Postgres is
+    # configured. Left to Docker's own allocation that address is stable in
+    # practice and unpinned in principle — and Postgres does not start at all
+    # when it cannot bind a configured address, so the failure mode is a first
+    # boot that looks like a broken database rather than a moved bridge.
+
+    - name: Ensure the docker configuration directory
+      ansible.builtin.file:
+        path: /etc/docker
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Pin the docker bridge address
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          {
+            "bip": "<{ docker-bridge-gateway }>/16"
+          }
+      notify: Restart docker
+
+    # Lifted from ONCE, which is the one part of its Ansible stage worth taking:
+    # the retry loop matters on a freshly booted droplet whose network is not
+    # necessarily up when Ansible first reaches it.
+    - name: Install docker
+      ansible.builtin.shell: >-
+        curl -fsSL https://get.docker.com -o install-docker.sh
+        && sh install-docker.sh
+        && rm install-docker.sh
+      args:
+        creates: /usr/bin/docker
+      register: docker_install_result
+      until: docker_install_result.rc == 0
+      retries: 10
+      delay: 10
+
+    - name: Ensure docker is running
+      ansible.builtin.systemd_service:
+        name: docker
+        state: started
+        enabled: true
+
+    # The handler would otherwise run at the end of the play, long after
+    # Postgres has tried and failed to bind an address that was not there yet.
+    - name: Apply the docker configuration before anything binds to the bridge
+      ansible.builtin.meta: flush_handlers
+
+    # The assertion the constraint above deserves. Without it a wrong bridge
+    # address surfaces three tasks later as "could not bind IPv4 address", which
+    # names the symptom and not the cause.
+    - name: Confirm the bridge carries the pinned address
+      ansible.builtin.command:
+        cmd: ip -4 addr show docker0
+      register: airflow_docker0
+      changed_when: false
+      failed_when: false
+      until: "'<{ docker-bridge-gateway }>/16' in airflow_docker0.stdout"
+      retries: 10
+      delay: 3
+
+    - name: Refuse to continue without the pinned bridge address
+      ansible.builtin.assert:
+        that: "'<{ docker-bridge-gateway }>/16' in airflow_docker0.stdout"
+        fail_msg: >-
+          docker0 is not carrying <{ docker-bridge-gateway }>/16. Postgres is
+          about to be told to bind that address and will not start without it.
+          Check /etc/docker/daemon.json and `systemctl status docker`.
+        success_msg: "docker0 carries <{ docker-bridge-gateway }>/16"
+
+    # -------------------------------------------------------------- postgres
+    #
+    # On the host rather than in a container, because `archive_command` has to
+    # invoke the wal-g binary in the same filesystem as the postgres process.
+    # Containerising it would mean building and hosting a custom image with
+    # wal-g inside, which is infrastructure this stack does not have.
+    #
+    # From PGDG rather than the distro, which is what makes `postgres-version`
+    # mean anything: Ubuntu 24.04 ships exactly one major version, so against the
+    # distro package the key would be documentation. And the pin matters because
+    # WAL-G backups do not restore across major versions — a base backup taken on
+    # 16 cannot be restored onto 17.
+
+    - name: Ensure the apt keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    # Armored, and referenced by `signed-by` below. apt reads .asc keyrings
+    # directly, so there is no dearmoring step to get wrong.
+    - name: Install the PGDG signing key
+      ansible.builtin.get_url:
+        url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+        dest: /etc/apt/keyrings/postgresql.asc
+        owner: root
+        group: root
+        mode: "0644"
+
+    # deb822 rather than the one-line sources format: `apt_repository` is
+    # deprecated and scheduled for removal in ansible-core 2.25, and this is
+    # what replaces it. It does not refresh the package lists itself, hence the
+    # explicit update below rather than a flag here.
+    - name: Add the PGDG repository
+      ansible.builtin.deb822_repository:
+        name: pgdg
+        types: [deb]
+        uris: https://apt.postgresql.org/pub/repos/apt
+        suites: "{{ ansible_distribution_release }}-pgdg"
+        components: [main]
+        signed_by: /etc/apt/keyrings/postgresql.asc
+        enabled: true
+        state: present
+      register: airflow_pgdg_repo
+
+    - name: Refresh the package lists for PGDG
+      when: airflow_pgdg_repo.changed
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: Install Postgres <{ postgres-version }>
+      ansible.builtin.apt:
+        name: "postgresql-<{ postgres-version }>"
+        state: present
+
+    # Debian's packaging writes `include_dir = 'conf.d'` into postgresql.conf
+    # and creates the directory, so a drop-in is the supported way to configure
+    # a cluster without editing a file the package owns. Asserted rather than
+    # assumed: a cluster created some other way would silently ignore
+    # everything below.
+    - name: Ensure postgresql.conf reads the drop-in directory
+      ansible.builtin.lineinfile:
+        path: <{ postgres-conf-dir }>/postgresql.conf
+        regexp: "^#?include_dir\\s*=\\s*'conf.d'"
+        line: "include_dir = 'conf.d'"
+        state: present
+      notify: Restart postgres
+
+    - name: Admit the container network to Postgres
+      ansible.builtin.blockinfile:
+        path: <{ postgres-conf-dir }>/pg_hba.conf
+        marker: "# {mark} airflow ANSIBLE MANAGED BLOCK"
+        # blockinfile rather than an `include` directive, deliberately:
+        # `include` in pg_hba.conf is a Postgres 16 feature and
+        # `postgres-version` is a key someone can set to 14.
+        #
+        # The whole 172.16.0.0/12 rather than the bridge alone, because compose
+        # puts the containers on their own network and they reach the host
+        # through it. scram-sha-256, so this is a password check and not a
+        # trust rule — a container on this machine is not automatically the
+        # airflow role.
+        block: |
+          host    all    all    172.16.0.0/12    scram-sha-256
+      notify: Restart postgres
+
+    # ------------------------------------------------------------------ wal-g
+    #
+    # SECOND ordering constraint. This has to be installed and configured before
+    # archive_mode is switched on. The other way round, Postgres starts trying to
+    # archive with no binary to run, every WAL segment fails, and pg_wal grows
+    # until the boot volume is full — a database that stops accepting writes
+    # because its backup tool was installed a minute late.
+
+    - name: Work out which wal-g release asset this machine needs
+      ansible.builtin.set_fact:
+        # Not `ansible_architecture` verbatim: wal-g names the x86 build amd64
+        # where Ansible reports x86_64, and the arm build aarch64 where they
+        # agree.
+        airflow_walg_asset: >-
+          wal-g-pg-{{ ansible_distribution_version }}-{{
+            'aarch64' if ansible_architecture == 'aarch64' else 'amd64'
+          }}
+
+    - name: Read the installed wal-g version
+      ansible.builtin.command:
+        cmd: /usr/local/bin/wal-g --version
+      register: airflow_walg_installed
+      failed_when: false
+      changed_when: false
+
+    # There is no apt package for wal-g, so this is a pinned release asset
+    # verified against the checksum published beside it. The whole block is
+    # skipped once the pinned version is what is installed, which is what keeps
+    # a converge from re-downloading 18 MB on every create.
+    - name: Install wal-g <{ walg-version }>
+      when: "'<{ walg-version }>' not in airflow_walg_installed.stdout"
+      block:
+        - name: Make a directory to download wal-g into
+          ansible.builtin.file:
+            path: /tmp/walg-install
+            state: directory
+            mode: "0755"
+
+        - name: Download the wal-g release and its checksum
+          ansible.builtin.get_url:
+            url: >-
+              https://github.com/wal-g/wal-g/releases/download/<{ walg-version }>/{{ item }}
+            dest: "/tmp/walg-install/{{ item }}"
+            mode: "0644"
+          loop:
+            - "{{ airflow_walg_asset }}.tar.gz"
+            - "{{ airflow_walg_asset }}.tar.gz.sha256"
+
+        # The point of pinning a version is lost if the bytes are not the ones
+        # that version published. The sidecar is in sha256sum's own format, so
+        # this is a check rather than a comparison written by hand.
+        - name: Verify the download against the published checksum
+          ansible.builtin.command:
+            cmd: "sha256sum -c {{ airflow_walg_asset }}.tar.gz.sha256"
+            chdir: /tmp/walg-install
+          changed_when: false
+
+        - name: Unpack wal-g
+          ansible.builtin.unarchive:
+            src: "/tmp/walg-install/{{ airflow_walg_asset }}.tar.gz"
+            dest: /tmp/walg-install
+            remote_src: true
+
+        # The tarball holds a single file named after the asset. Renamed on the
+        # way in so archive_command names a path rather than a build variant.
+        - name: Install the wal-g binary
+          ansible.builtin.copy:
+            src: "/tmp/walg-install/{{ airflow_walg_asset }}"
+            dest: /usr/local/bin/wal-g
+            remote_src: true
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Remove the download directory
+          ansible.builtin.file:
+            path: /tmp/walg-install
+            state: absent
+
+    - name: Ensure the wal-g configuration directory
+      ansible.builtin.file:
+        path: <{ walg-conf-dir }>
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: "0750"
+
+    # 0600 and owned by postgres, because archive_command runs as postgres and
+    # nothing else on this machine has any business reading these.
+    #
+    # R2 is S3-compatible but not S3: it has no meaningful region — `auto` is
+    # what its documentation specifies, and wal-g fails opaquely when the S3
+    # client has none at all — and it needs path-style addressing, since the
+    # virtual-host form addresses a bucket that does not answer.
+    - name: Write the wal-g environment
+      ansible.builtin.copy:
+        dest: <{ walg-env-file }>
+        owner: postgres
+        group: postgres
+        mode: "0600"
+        content: |
+          WALG_S3_PREFIX=<{ walg-prefix }>
+          AWS_ACCESS_KEY_ID={{ lookup('env','COLORS_PAR_WALG_R2_ACCESS_KEY_ID') }}
+          AWS_SECRET_ACCESS_KEY={{ lookup('env','COLORS_PAR_WALG_R2_SECRET_ACCESS_KEY') }}
+          AWS_ENDPOINT=<{ walg-r2-endpoint }>
+          AWS_REGION=<{ walg-r2-region }>
+          AWS_S3_FORCE_PATH_STYLE=true
+          PGHOST=/var/run/postgresql
+      no_log: true
+
+    - name: Install the wal-g wrapper and the backup scripts
+      ansible.builtin.copy:
+        src: "files/{{ item }}"
+        dest: "/usr/local/bin/{{ item }}"
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - wal-g-wrapper
+        - walg-basebackup
+        - walg-check
+        - walg-notify
+
+    # Only now, with the binary and its environment in place, is archiving
+    # switched on.
+    - name: Configure Postgres for the containers and for archiving
+      ansible.builtin.copy:
+        dest: <{ postgres-conf-dir }>/conf.d/airflow.conf
+        owner: postgres
+        group: postgres
+        mode: "0644"
+        content: |
+          # Managed by colors airflow. Edits here are overwritten on the next
+          # create; change colors.yml instead.
+
+          # localhost for psql over the unix socket and for anything on the box,
+          # the bridge gateway for the containers. Never a public interface: a
+          # DigitalOcean droplet has no firewall unless one is created, and
+          # `digitalocean-firewall: false` is a configuration a user can choose.
+          listen_addresses = 'localhost,<{ docker-bridge-gateway }>'
+
+          wal_level = replica
+          archive_mode = on
+          archive_command = '/usr/local/bin/wal-g-wrapper wal-push %p'
+
+          # Ship a segment every five minutes even when nothing is writing.
+          # Without this an idle Airflow can leave the last committed
+          # transaction sitting in an unarchived segment indefinitely, which
+          # makes the recovery point unbounded rather than five minutes — the
+          # backups would look healthy the whole time.
+          archive_timeout = 300
+      notify: Restart postgres
+
+    - name: Apply the Postgres configuration
+      ansible.builtin.meta: flush_handlers
+
+    - name: Ensure Postgres is running
+      ansible.builtin.systemd_service:
+        name: "postgresql@<{ postgres-version }>-main"
+        state: started
+        enabled: true
+
+    # psql over the unix socket as the postgres superuser, rather than the
+    # community.postgresql modules: those need psycopg2 installed on the managed
+    # node, and adding a Python database driver to a server whose only client is
+    # a container is a dependency for nothing.
+    #
+    # The password reaches psql through an environment variable and is quoted
+    # into SQL by psql's own `:'var'` interpolation, so a password containing a
+    # quote is escaped by the thing that knows how, and never appears in the
+    # process table.
+    - name: Ensure the airflow role and database
+      become_user: postgres
+      ansible.builtin.shell:
+        cmd: psql -v ON_ERROR_STOP=1 -q -f -
+        stdin: |
+          \set pw `echo "$AIRFLOW_DB_PASSWORD"`
+          DO $$
+          BEGIN
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'airflow') THEN
+              CREATE ROLE airflow LOGIN;
+            END IF;
+          END
+          $$;
+          ALTER ROLE airflow WITH LOGIN PASSWORD :'pw';
+          SELECT 'CREATE DATABASE airflow OWNER airflow'
+          WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'airflow')\gexec
+      environment:
+        AIRFLOW_DB_PASSWORD: "{{ lookup('env','COLORS_PAR_POSTGRES_PASSWORD') }}"
+      # The ALTER runs every time, so rotating COLORS_PAR_POSTGRES_PASSWORD
+      # converges rather than needing a manual step. That also means this can
+      # never report `changed` honestly, so it reports nothing.
+      changed_when: false
+      no_log: true
+
+    # ------------------------------------------------------- backup schedule
+
+    - name: Install the backup units
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/{{ item.name }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: "{{ item.content }}"
+      loop:
+        - name: walg-basebackup.service
+          content: |
+            [Unit]
+            Description=WAL-G base backup of the Airflow metadata database
+            # Reports through the one alerting path this machine has. %n is the
+            # failing unit's own name, so the notifier knows whose journal to
+            # quote.
+            OnFailure=walg-alert@%n.service
+
+            [Service]
+            Type=oneshot
+            User=postgres
+            ExecStart=/usr/local/bin/walg-basebackup
+
+        - name: walg-basebackup.timer
+          content: |
+            [Unit]
+            Description=Take a WAL-G base backup on a schedule
+
+            [Timer]
+            OnCalendar=<{ walg-full-backup-oncalendar }>
+            # A run missed because the droplet was down fires once on boot
+            # instead of being skipped. A crontab entry would not do this, and it
+            # is most of why these are timers.
+            Persistent=true
+
+            [Install]
+            WantedBy=timers.target
+
+        - name: walg-check.service
+          content: |
+            [Unit]
+            Description=Check that a recent WAL-G base backup exists
+            OnFailure=walg-alert@%n.service
+
+            [Service]
+            Type=oneshot
+            User=postgres
+            ExecStart=/usr/local/bin/walg-check
+
+        - name: walg-check.timer
+          content: |
+            [Unit]
+            Description=Check the age of the newest WAL-G base backup
+
+            [Timer]
+            # Hourly, and not desired state. The threshold is what an operator
+            # has an opinion about — walg-max-backup-age-hours — while this is
+            # only how soon the breach is noticed, and an hour is inside the
+            # slack that threshold already carries.
+            OnCalendar=hourly
+            Persistent=true
+
+            [Install]
+            WantedBy=timers.target
+
+        - name: walg-alert@.service
+          content: |
+            [Unit]
+            Description=Report that %i failed
+
+            [Service]
+            Type=oneshot
+            # Credentials come from a 0600 file rather than from this unit:
+            # systemd unit files are world-readable, and `systemctl cat` prints
+            # them.
+            EnvironmentFile=<{ airflow-conf-dir }>/alert.env
+            ExecStart=/usr/local/bin/walg-notify %i
+
+    - name: Ensure the airflow configuration directory
+      ansible.builtin.file:
+        path: <{ airflow-conf-dir }>
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Write the alerting environment
+      ansible.builtin.copy:
+        dest: <{ airflow-conf-dir }>/alert.env
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          SMTP_HOST=<{ smtp-server }>
+          SMTP_PORT=<{ smtp-port }>
+          SMTP_USERNAME=<{ smtp-username }>
+          SMTP_PASSWORD=<{ smtp-password-lookup|safe }>
+          ALERT_FROM=<{ airflow-smtp-from }>
+          ALERT_TO=<{ alerts-email }>
+          ALERT_HOSTNAME=<{ airflow-host }>
+      no_log: true
+
+    - name: Enable the backup timers
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+        daemon_reload: true
+      loop:
+        - walg-basebackup.timer
+        - walg-check.timer
+
+    # A machine created at 09:00 with a 02:00 schedule would otherwise hold no
+    # restorable backup for seventeen hours: WAL would be shipping the whole
+    # time, into an archive with no base backup to replay it onto. This closes
+    # that window.
+    #
+    # The guard is `walg-check` itself rather than a second opinion about what
+    # "backed up" means. That matters more than it sounds: the first version
+    # asked whether the ARCHIVE was empty, which is a different question. The
+    # archive outlives the machine on purpose — that is what makes
+    # recreate-and-restore possible — so after a delete-and-recreate it is full
+    # of the DEAD cluster's backups, the guard saw a non-empty archive, and the
+    # rebuilt database went unbacked-up while the freshness check happily
+    # reported a healthy backup age for somebody else's data.
+    #
+    # One definition, used by the timer and by the create, and it now matches on
+    # the running cluster's system identifier.
+    - name: Ask whether THIS cluster has a recent base backup
+      become_user: postgres
+      ansible.builtin.command:
+        cmd: /usr/local/bin/walg-check
+      register: airflow_walg_check
+      changed_when: false
+      failed_when: false
+
+    - name: Take a base backup now
+      when: airflow_walg_check.rc != 0
+      ansible.builtin.systemd_service:
+        name: walg-basebackup.service
+        state: started
+
+    # ---------------------------------------------------------------- airflow
+
+    # Created here, not with the key that goes in it, because the DAG directory
+    # below is chowned to this account and `chown` fails outright on a user that
+    # does not exist yet — "failed to look up user deploy". That is exactly how
+    # the second real create failed.
+    #
+    # Deliberately NOT moved by pulling the key installation forward instead: an
+    # account with no authorized_keys cannot be authenticated as, so creating it
+    # early opens nothing, while installing the key early would open the machine
+    # before the stack it feeds is running.
+    - name: Create the deploy user
+      ansible.builtin.user:
+        name: <{ deploy-user }>
+        shell: /bin/bash
+        create_home: true
+        state: present
+
+    - name: Ensure the DAG and log directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        # Owned by the deploy account, because rsync writes here as that user
+        # and needs to create its own temporary files. World-readable so the
+        # container — which runs as uid <{ airflow-uid }> — can read them; the
+        # mount is read-only on the container side.
+        - path: <{ dags-dest }>
+          owner: <{ deploy-user }>
+          group: <{ deploy-user }>
+          mode: "0755"
+        # Owned by the image's own uid, because the containers write here.
+        - path: <{ airflow-logs-dir }>
+          owner: "<{ airflow-uid }>"
+          group: "0"
+          mode: "0775"
+
+    # Two secrets Airflow needs that are NOT desired state, generated here and
+    # kept.
+    #
+    # Both default to a value Airflow makes up at startup, which is fine for one
+    # process and wrong for five: the api-server signs task-identity JWTs that
+    # the scheduler presents back, so a per-container secret means every task
+    # fails authentication. They have to be shared, and they have to survive a
+    # restart.
+    #
+    # Generated on the machine rather than added to colors.yml because neither
+    # is worth an operator's attention: nothing persisted is encrypted with
+    # them, so a new machine may safely have new ones. That is exactly what is
+    # NOT true of COLORS_PAR_AIRFLOW_FERNET_KEY, which encrypts stored
+    # connections and therefore has to be carried across a rebuild — restoring
+    # with a different one leaves every connection undecryptable, a broken
+    # restore that looks like a successful one until a DAG uses a connection.
+    - name: Generate the Airflow instance secrets
+      ansible.builtin.shell:
+        cmd: umask 077 && openssl rand -hex 32 > <{ airflow-conf-dir }>/{{ item }}
+        creates: <{ airflow-conf-dir }>/{{ item }}
+      loop:
+        - api_secret_key
+        - jwt_secret
+
+    - name: Read the API secret key
+      ansible.builtin.slurp:
+        src: <{ airflow-conf-dir }>/api_secret_key
+      register: airflow_api_secret_key
+      no_log: true
+
+    - name: Read the JWT secret
+      ansible.builtin.slurp:
+        src: <{ airflow-conf-dir }>/jwt_secret
+      register: airflow_jwt_secret
+      no_log: true
+
+    # The SQLAlchemy URL carries the password, so it is percent-encoded rather
+    # than interpolated raw — a password containing @ or : would otherwise
+    # produce a URL that parses into a different host. Jinja's urlencode leaves
+    # `/` alone, which is the one character that still has to be handled.
+    - name: Write the Airflow environment
+      ansible.builtin.copy:
+        dest: <{ airflow-conf-dir }>/airflow.env
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          AIRFLOW__CORE__EXECUTOR=LocalExecutor
+          AIRFLOW__CORE__LOAD_EXAMPLES=False
+          AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+          AIRFLOW__CORE__FERNET_KEY={{ lookup('env','COLORS_PAR_AIRFLOW_FERNET_KEY') }}
+          AIRFLOW__CORE__EXECUTION_API_SERVER_URL=http://airflow-apiserver:8080/execution/
+          AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:{{ lookup('env','COLORS_PAR_POSTGRES_PASSWORD') | urlencode | replace('/', '%2F') }}@<{ docker-bridge-gateway }>:5432/airflow
+          AIRFLOW__API__BASE_URL=https://<{ airflow-host }>
+          AIRFLOW__API__SECRET_KEY={{ airflow_api_secret_key.content | b64decode | trim }}
+          AIRFLOW__API_AUTH__JWT_SECRET={{ airflow_jwt_secret.content | b64decode | trim }}
+          AIRFLOW__SMTP__SMTP_HOST=<{ smtp-server }>
+          AIRFLOW__SMTP__SMTP_PORT=<{ smtp-port }>
+          AIRFLOW__SMTP__SMTP_USER=<{ smtp-username }>
+          AIRFLOW__SMTP__SMTP_PASSWORD=<{ smtp-password-lookup|safe }>
+          AIRFLOW__SMTP__SMTP_STARTTLS=True
+          AIRFLOW__SMTP__SMTP_SSL=False
+          AIRFLOW__SMTP__SMTP_MAIL_FROM=<{ airflow-smtp-from }>
+          # Everything behind Caddy is already authenticated, and Airflow's own
+          # SimpleAuthManager would otherwise put a second login screen behind
+          # the first with a password it generates into a file at startup.
+          AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS=True
+      no_log: true
+
+    - name: Install the compose file
+      ansible.builtin.copy:
+        src: files/docker-compose.yml
+        dest: <{ airflow-conf-dir }>/docker-compose.yml
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Ensure the caddy configuration directory
+      ansible.builtin.file:
+        path: /etc/caddy
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install the Caddyfile
+      ansible.builtin.copy:
+        src: files/Caddyfile
+        dest: /etc/caddy/Caddyfile
+        owner: root
+        group: root
+        mode: "0644"
+
+    # Verified before it is generated, and this is the whole reason htpasswd is
+    # installed. bcrypt is salted, so hashing the same password twice produces
+    # different output — regenerating unconditionally would rewrite caddy.env on
+    # every converge and bounce the only thing serving the site. Verifying first
+    # means the stored hash is reused whenever the password has not changed, and
+    # replaced the moment it has.
+    - name: Check whether the stored admin hash still matches the password
+      ansible.builtin.command:
+        argv:
+          - htpasswd
+          - -bv
+          - <{ airflow-conf-dir }>/caddy.htpasswd
+          - <{ airflow-admin-username }>
+          - "{{ lookup('env','COLORS_PAR_AIRFLOW_ADMIN_PASSWORD') }}"
+      register: airflow_admin_hash_ok
+      failed_when: false
+      changed_when: false
+      no_log: true
+
+    # Cost 14 matches Caddy's own default for `caddy hash-password`. It is
+    # deliberately slow, and it is paid once rather than per request: Caddy
+    # caches a successful verification in memory, which is what keeps basic auth
+    # — where the browser resends credentials on every single request — from
+    # costing a second of CPU per asset.
+    - name: Hash the admin password for Caddy
+      when: airflow_admin_hash_ok.rc != 0
+      ansible.builtin.command:
+        argv:
+          - htpasswd
+          - -cbBC
+          - "14"
+          - <{ airflow-conf-dir }>/caddy.htpasswd
+          - <{ airflow-admin-username }>
+          - "{{ lookup('env','COLORS_PAR_AIRFLOW_ADMIN_PASSWORD') }}"
+      no_log: true
+
+    - name: Read the admin hash back
+      ansible.builtin.slurp:
+        src: <{ airflow-conf-dir }>/caddy.htpasswd
+      register: airflow_admin_htpasswd
+      no_log: true
+
+    # The hash alone, without the username htpasswd stores in front of it. Caddy
+    # accepts the $2y$ prefix htpasswd writes — it is bcrypt, the same as the
+    # $2a$ that `caddy hash-password` produces.
+    - name: Write the Caddy environment
+      ansible.builtin.copy:
+        dest: <{ airflow-conf-dir }>/caddy.env
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          AIRFLOW_ADMIN_PASSWORD_HASH={{ (airflow_admin_htpasswd.content | b64decode).strip().split(':', 1)[1] }}
+      no_log: true
+
+    # compose is the converger here, so this runs every time and reports what it
+    # actually did. `--remove-orphans` matters on an upgrade that renames or
+    # drops a service: without it the old container keeps running, and with
+    # Airflow that means two schedulers against one database.
+    - name: Bring the Airflow stack up
+      ansible.builtin.command:
+        cmd: docker compose -f <{ airflow-conf-dir }>/docker-compose.yml up -d --remove-orphans
+      register: airflow_compose
+      changed_when: >-
+        'Started' in airflow_compose.stderr
+        or 'Created' in airflow_compose.stderr
+        or 'Recreated' in airflow_compose.stderr
+
+    # ----------------------------------------------------------- the deploy key
+    #
+    # THIRD ordering constraint, and the reason the KEY is last: an installed key
+    # is the only thing on the machine reachable from the internet by design, and
+    # opening it before the stack it feeds is running would accept a DAG sync
+    # into a directory nothing is watching.
+    #
+    # The *account* is created much earlier, up in the airflow section, because
+    # the DAG directory is chowned to it. An account with no authorized_keys is
+    # not a way in — nothing can authenticate as it — so splitting the two costs
+    # nothing and is what makes the ordering above actually work.
+
+    # No sudoers entry, and that is the difference from ONCE worth noticing.
+    # ONCE's deploy key carries NOPASSWD sudo for `once *` because a deploy there
+    # means restarting a container. Airflow's dag-processor rescans its DAG
+    # directory on a timer, so a sync needs nothing restarted and the key needs
+    # no privilege at all.
+    - name: Locate rrsync
+      ansible.builtin.stat:
+        path: /usr/bin/rrsync
+      register: airflow_rrsync
+
+    - name: Refuse to install a deploy key without rrsync
+      ansible.builtin.assert:
+        that: airflow_rrsync.stat.exists
+        fail_msg: >-
+          /usr/bin/rrsync is missing even though the rsync package is installed.
+          The deploy key's ForceCommand is the only thing confining CI to the DAG
+          directory, so no key is installed without it.
+        success_msg: "rrsync is present"
+
+    # A symlink, so the authorized_keys line can name a path this package chose
+    # rather than one the distro did. That line is rendered on the workstation,
+    # where the machine's package layout is not known.
+    - name: Put rrsync where the ForceCommand looks for it
+      ansible.builtin.file:
+        src: /usr/bin/rrsync
+        dest: <{ rrsync-path }>
+        state: link
+
+    - name: Install the authorized key reconciler
+      ansible.builtin.copy:
+        src: files/authorized-keys
+        dest: /usr/local/bin/airflow-authorized-keys
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Ensure the deploy .ssh directory
+      ansible.builtin.file:
+        path: /home/<{ deploy-user }>/.ssh
+        state: directory
+        owner: <{ deploy-user }>
+        group: <{ deploy-user }>
+        mode: "0700"
+
+    # Only this generation's key is rendered, so the artifact stays a pure
+    # function of desired state. Retaining the previous generation is the
+    # reconciler's job, on the box, where the previous key actually is.
+    - name: Stage the current deploy key
+      ansible.builtin.copy:
+        src: deploy_keys
+        dest: <{ airflow-conf-dir }>/deploy_keys
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Reconcile the deploy authorized keys
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/airflow-authorized-keys
+          - <{ airflow-conf-dir }>/deploy_keys
+          - /home/<{ deploy-user }>/.ssh/authorized_keys
+      register: airflow_authorized_keys
+      changed_when: airflow_authorized_keys.stdout != "unchanged"
+
+    - name: Own the deploy authorized keys
+      ansible.builtin.file:
+        path: /home/<{ deploy-user }>/.ssh/authorized_keys
+        owner: <{ deploy-user }>
+        group: <{ deploy-user }>
+        mode: "0600"

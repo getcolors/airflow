@@ -1,0 +1,23 @@
+[project]
+name = "package-airflow-blue"
+version = "0.1.0"
+description = "Blue/Python implementation of the Airflow package"
+requires-python = ">=3.11"
+dependencies = ["blue", "package-once-blue"]
+
+[tool.uv.sources]
+blue = { git = "https://github.com/getcolors/blue.git", rev = "7dd17ac920060f622f9f98b503bbe36e35d730ec" }
+package-once-blue = { git = "https://github.com/getcolors/once.git", rev = "031b89ce31117d6c786123dc352d8b8fb27669e4", subdirectory = "blue" }
+
+[dependency-groups]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+[tool.hatch.metadata]
+allow-direct-references = true
+[tool.hatch.build.targets.wheel]
+packages = ["src/package_airflow_blue"]
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

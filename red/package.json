@@ -1,0 +1,11 @@
+{
+  "name": "package-airflow-red-dev",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "bun test", "typecheck": "tsc --noEmit" },
+  "dependencies": {
+    "red": "github:getcolors/red#b434e37568b91228ef14c2271f6fbeea805ae7ae",
+    "package-once-red": "github:getcolors/once#031b89ce31117d6c786123dc352d8b8fb27669e4"
+  },
+  "devDependencies": { "@types/bun": "^1.2.0", "typescript": "^7.0.2" }
+}

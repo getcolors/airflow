@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+
+# Merge this generation's deploy key into the deploy user's authorized_keys,
+# keeping the previous generation alongside the current one.
+#
+# Ported from ONCE's `files/authorized-keys`, which is a Babashka script. The
+# algorithm is unchanged line for line; only the language and the managed marker
+# differ. Python because it is already on an Ubuntu machine and Babashka is not:
+# ONCE installs bb because its deploy path needs it for other things, and
+# putting a whole extra runtime on an Airflow server for one forty-line script
+# is the kind of thing this package's plan rejected when it declined to reuse
+# ONCE's Ansible stage wholesale.
+#
+# Deploy keys are ephemeral: a keypair is generated on every create and nothing
+# remembers what was issued. Installing a new key therefore invalidates the old
+# one the moment this runs, and if the subsequent publication to GitHub fails,
+# the repository is left holding a key the box no longer accepts. Retaining one
+# previous generation closes that window — the old key keeps working until the
+# new one has been published, and the next create prunes it.
+#
+# Two generations is the whole benefit. Anything more only extends how long a
+# leaked key stays usable.
+#
+# Ordering comes from position in the file, not from a timestamp: this content
+# is rendered into an artifact scripts/golden.sh diffs, and a clock reading in a
+# key comment would make that comparison fail.
+
+import os
+import re
+import sys
+
+# No trailing space, and no `-wo <dir>` either. The directory is part of the
+# ForceCommand, so an entry written when `dags-dest` was something else has to
+# still be recognised as ours — left unmatched it would be mistaken for a
+# foreign key and preserved forever, granting write access to a directory
+# desired state no longer mentions.
+MANAGED_MARKER = 'command="<{ rrsync-path }>'
+
+
+def managed(line):
+    return MANAGED_MARKER in line
+
+
+def comment_of(line):
+    """The key comment, which identifies the generation an entry belongs to.
+
+    Not the ForceCommand: that carries `dags-dest`, so changing where DAGs land
+    would make the previously installed line match nothing in the current
+    generation — pruned as departed at exactly the moment desired state is
+    changing. The comment carries no timestamp by design, so both generations
+    have byte-identical comments and this is a string equality rather than a
+    parse. That also sidesteps an ambiguity: a profile, owner or repository
+    containing a dash makes splitting `airflow-deploy-<profile>-<owner>-<repo>`
+    back apart impossible, and comparing whole strings never has to.
+
+    Read as the remainder after the algorithm and the key body. Generated
+    comments hold no spaces, so the last token would agree — taking the
+    remainder just keeps that from being load-bearing.
+
+    An entry carrying no comment at all falls back to its own algorithm and
+    body. Returning None for those would group every one of them together, and
+    the first would be retained as the `previous` generation of an unrelated
+    key.
+    """
+    parts = re.split(r'"\s+', line, maxsplit=1)
+    if len(parts) < 2:
+        return None
+    after = parts[1]
+    tokens = after.strip().split()
+    comment = " ".join(tokens[2:])
+    return comment if comment.strip() else after
+
+
+def read_lines(path):
+    if not os.path.exists(path):
+        return []
+    with open(path) as handle:
+        return [line for line in handle.read().splitlines() if line.strip()]
+
+
+def reconcile(current, existing):
+    """Foreign lines pass through untouched. For every entry in `current`, keep
+    the most recent previously installed key — the last matching line, since new
+    keys are appended — followed by the new one. Generations older than one are
+    dropped, as is a key whose repository left desired state."""
+    result = [line for line in existing if not managed(line)]
+    installed = [line for line in existing if managed(line)]
+    for line in current:
+        key_comment = comment_of(line)
+        previous = [
+            other
+            for other in installed
+            if comment_of(other) == key_comment and other != line
+        ]
+        if previous:
+            result.append(previous[-1])
+        result.append(line)
+    return result
+
+
+def main(argv):
+    if len(argv) != 2:
+        print(
+            "airflow-authorized-keys: usage: airflow-authorized-keys STAGED TARGET",
+            file=sys.stderr,
+        )
+        return 1
+
+    staged, target = argv
+    result = reconcile(read_lines(staged), read_lines(target))
+    content = "\n".join(result) + "\n" if result else ""
+
+    before = None
+    if os.path.exists(target):
+        with open(target) as handle:
+            before = handle.read()
+
+    if content == before:
+        print("unchanged")
+        return 0
+
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w") as handle:
+        handle.write(content)
+    print("changed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
