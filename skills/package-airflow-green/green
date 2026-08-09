@@ -53,7 +53,7 @@
 ;; cannot resolve its own library says so rather than inventing a SHA or
 ;; silently falling back to whatever is lying around. `bb pin` refuses to stamp
 ;; a dirty or unpushed HEAD for the same reason.
-(def ^:private airflow-sha "bb16cbe8341672f7a91bbb0d4de3663b982cda51")
+(def ^:private airflow-sha "d1d99882c7b9cc00699afa05e85c2cdf8ecfdad4")
 
 (def ^:private airflow-git-url "https://github.com/getcolors/airflow.git")
 (def ^:private once-git-url "https://github.com/getcolors/once.git")
