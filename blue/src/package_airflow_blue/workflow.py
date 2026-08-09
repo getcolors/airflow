@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from blue import dry_run,progress,tofu
 from blue.cli import par_name,read_pars
+from blue.lifecycle import preflight
 from blue.workflow import advice_add,workflow
 from . import github,tools
 from .validate import env_errors,secret_errors,state_errors
@@ -18,10 +19,8 @@ async def with_keys(o,real):
   return{**o,"blue/exit":0,"airflow/deploy-keys":k,**({"airflow/key-dir":str(Path(k[0]["private-file"]).parent)}if k else{})}
  return{**o,"blue/exit":0,"airflow/deploy-keys":github.placeholder_keys(o)}
 async def start_step(original,env=None):
- env=os.environ if env is None else env;o=read_pars({**DEFAULTS,**original},env);ev=o.get("blue/event");real=not o.get("blue/dry-run");life=ev in("create","delete");es=[*env_errors(env),*state_errors(o),*(secret_errors(o)if real and life else[])]
- if real and ev=="delete"and o.get("compute-prevent-destroy"):es.append(f"compute destruction is protected; set {par_name('compute-prevent-destroy')}=false to delete")
- if es:return{**o,"blue/exit":2,"blue/err":"\n".join(es)}
- return{**(await adopt_existing_state(o)),"blue/exit":0}if real and ev=="delete"else await with_keys(o,real)
+ async def after(o,_e,c):return{**(await adopt_existing_state(o)),"blue/exit":0}if c["real"]and c["event"]=="delete"else await with_keys(o,c["real"])
+ return await preflight(original,defaults=DEFAULTS,overlay=read_pars,env=env,validators=[lambda _o,e,_c:env_errors(e),lambda o,_e,_c:state_errors(o),lambda o,_e,c:secret_errors(o)if c["real"]and c["event"]in("create","delete")else[],lambda o,_e,c:[f"compute destruction is protected; set {par_name('compute-prevent-destroy')}=false to delete"]if c["real"]and c["event"]=="delete"and o.get("compute-prevent-destroy")else[]],after_validate=after)
 async def github_step(o):
  r=tools.seed_step(o);return r if(r.get("blue/exit")or 0)>0 else await github.github_step(r)
 async def ansible_cleanup_step(o):return await tools.ansible_remote_step(await tools.ansible_local_step(o))
@@ -29,7 +28,7 @@ def wire_fn(s,o):
  if o.get("blue/event")=="delete":return{"airflow/start":(start_step,"airflow/github"),"airflow/github":(github_step,"airflow/ansible-cleanup"),"airflow/ansible-cleanup":(ansible_cleanup_step,"airflow/smtp-post"),"airflow/smtp-post":(tools.smtp_post_step,"airflow/dns"),"airflow/dns":(tools.dns_step,"airflow/smtp","airflow/compute"),"airflow/smtp":(tools.smtp_step,),"airflow/compute":(tools.compute_step,)}.get(s)
  return{"airflow/start":(start_step,"airflow/compute"),"airflow/compute":(tools.compute_step,"airflow/smtp"),"airflow/smtp":(tools.smtp_step,"airflow/dns"),"airflow/dns":(tools.dns_step,"airflow/smtp-post"),"airflow/smtp-post":(tools.smtp_post_step,"airflow/ansible-local","airflow/ansible-remote"),"airflow/ansible-local":(tools.ansible_local_step,),"airflow/ansible-remote":(tools.ansible_remote_step,"airflow/github"),"airflow/github":(github_step,)}.get(s)
 def backend_advice(dir_fn,t):
- key=lambda o:f"{o.get('profile')or'airflow'}/{t}.tfstate";return tofu.backends(lambda o:str(o.get("provider-backend")or"local"),{"local":tofu.local_backend_advice(dir_fn),"s3":tofu.s3_backend_advice(dir_fn,lambda o:{"bucket":o.get("s3-bucket"),"key":key(o),"region":o.get("s3-region")}),"r2":tofu.r2_backend_advice(dir_fn,lambda o:{"bucket":o.get("r2-bucket"),"key":key(o),"endpoint":o.get("r2-endpoint")})})
+ return tofu.conventional_backend_advice(dir=dir_fn,key=lambda o:f"{o.get('profile')or'airflow'}/{t}.tfstate")
 SIDE=["airflow/compute","airflow/smtp","airflow/dns","airflow/smtp-post","airflow/ansible-local","airflow/ansible-remote","airflow/ansible-cleanup","airflow/github"]
 def create_workflow():
  w=workflow(start="airflow/start",wire_fn=wire_fn)

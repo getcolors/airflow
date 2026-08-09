@@ -3,11 +3,14 @@ name = "package-airflow-blue"
 version = "0.1.0"
 description = "Blue/Python implementation of the Airflow package"
 requires-python = ">=3.11"
-dependencies = ["blue", "package-once-blue"]
+dependencies = [
+    "blue",
+    "package-once-blue",
+]
 
 [tool.uv.sources]
-blue = { git = "https://github.com/getcolors/blue.git", rev = "7dd17ac920060f622f9f98b503bbe36e35d730ec" }
-package-once-blue = { git = "https://github.com/getcolors/once.git", rev = "031b89ce31117d6c786123dc352d8b8fb27669e4", subdirectory = "blue" }
+blue = { git = "https://github.com/getcolors/blue.git", rev = "369c5aafea790a03b649b3513003651e672f3f57" }
+package-once-blue = { git = "https://github.com/getcolors/once.git", subdirectory = "blue", rev = "98d3cfa2c743b89a72bac0252c258f9edeedcad7" }
 
 [dependency-groups]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]

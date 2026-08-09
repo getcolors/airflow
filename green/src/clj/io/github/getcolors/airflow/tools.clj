@@ -46,6 +46,7 @@
    [clojure.walk :as walk]
    [green.ansible :as ansible]
    [green.cli :as green-cli]
+   [green.providers :as provider-ops]
    [green.scaffold :as sc]
    [green.tofu :as tofu]
    [green.workflow :as wf]
@@ -94,15 +95,11 @@
 
 (def ^:private airflow-root "io.github.getcolors.airflow.tools")
 (def ^:private once-root "io.github.getcolors.once.tools")
-(def ^:private raw-template :io.github.getcolors.airflow/raw)
 
 (def ^:private template-opts
   "Selmer reads `<{ var }>` and `<% if %>`, leaving `{{ }}` and `{% %}` to
   Jinja2 in the Ansible files and to Go templates in nothing at all."
-  {:tag-open \<
-   :tag-close \>
-   :filter-open \{
-   :filter-close \}})
+  sc/preserve-jinja-delimiters)
 
 (defn tool-dir
   "The isolated working directory for `tool` in the active profile.
@@ -114,11 +111,7 @@
   Identical to ONCE's but for the fallback profile name, which validation makes
   unreachable — `profile` is required."
   [opts tool]
-  (let [workdir (io/file (or (:workdir opts) ".colors"))
-        state-dir (when-not (.isAbsolute workdir)
-                    (some-> (:green/state-file opts) io/file .getAbsoluteFile .getParent))
-        root (if state-dir (io/file state-dir workdir) workdir)]
-    (str (io/file root (or (:profile opts) "airflow") tool))))
+  (green-cli/stage-dir opts tool {:default-profile "airflow"}))
 
 (defn delegated-tool-dir
   "The working directory an ONCE step will choose for itself.
@@ -142,9 +135,8 @@
   [template target data]
   {:template template :target target :data data :opts template-opts})
 
-(defn raw-spec
-  [target content]
-  (template-spec raw-template target {:content content}))
+(defn raw-spec [target content]
+  (sc/content-spec target content))
 
 ;; ---------------------------------------------------------------------------
 ;; credentials
@@ -155,13 +147,8 @@
   of them. Unset credentials are omitted, so build and dry-run stay
   credential-free."
   [opts & slots]
-  (not-empty
-   (into {}
-         (keep (fn [[k env-var]]
-                 (when-let [v (not-empty (str (get opts k)))]
-                   [env-var v])))
-         (apply merge (map #(validate/tofu-env opts %)
-                           (conj (vec slots) :provider-backend))))))
+  (provider-ops/tool-env validate/providers opts
+                         (conj (vec slots) :provider-backend)))
 
 (defn backend-credential-env
   "Environment additions for a process that only reads OpenTofu state. Provider

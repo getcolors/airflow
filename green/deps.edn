@@ -14,9 +14,9 @@
  ;; upstream means a golden diff in one is evidence about the other.
  :deps    {org.clojure/clojure       {:mvn/version "1.12.5"}
            io.github.getcolors/green {:git/url "https://github.com/getcolors/green.git"
-                                      :git/sha "1c1fb81563287c98aa1bcd0e12cd755296e6d98e"}
+                                      :git/sha "ceb4159a19ec281d60f10d11295c05c5de5f1c42"}
            io.github.getcolors/once  {:git/url "https://github.com/getcolors/once.git"
-                                      :git/sha "031b89ce31117d6c786123dc352d8b8fb27669e4"
+                                      :git/sha "98d3cfa2c743b89a72bac0252c258f9edeedcad7"
                                       :deps/root "green"}}
  :aliases {:dev  {:extra-paths ["test/clj" "test/resources"]}
            :test {:extra-paths ["test/clj" "test/resources"]

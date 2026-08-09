@@ -3,24 +3,21 @@ from pathlib import Path
 from importlib.resources import files
 from blue import tofu
 from blue.ansible import ansible_step,ansible_with_spec
-from blue.cli import par_name
-from blue.scaffold import scaffold
+from blue.cli import par_name,stage_dir
+from blue.providers import tool_env
+from blue.scaffold import PRESERVE_JINJA_DELIMITERS,content_spec,scaffold
 from package_once_blue import tools as once_tools
 from . import github
 from .utils import host_alias,with_once_shape
-from .validate import tofu_env
-ROOT=Path(__file__).parent/"resources";OPTS={"tag_open":"<","tag_close":">","filter_open":"{","filter_close":"}"}
+from .validate import providers
+ROOT=Path(__file__).parent/"resources";OPTS=PRESERVE_JINJA_DELIMITERS
 def template(p):return {"name":p,"content":str((ROOT/p).read_text())}
 def spec(t,target,data):return {"template":t,"target":target,"data":data,"opts":OPTS}
-def raw_spec(target,content):return spec(template("raw"),target,{"content":content})
+def raw_spec(target,content):return content_spec(target,content)
 compute_tool="airflow-compute";ansible_local_tool="airflow-ansible-local";ansible_remote_tool="airflow-ansible-remote";github_tool="airflow-github";dns_tool="tofu-dns";smtp_tool="tofu-smtp";smtp_post_tool="tofu-smtp-post"
-def tool_dir(o,t):
- w=Path(str(o.get("workdir")or".colors"));sf=o.get("blue/state-file");root=Path(sf).parent/w if not w.is_absolute() and sf else w;return str(root/str(o.get("profile")or"airflow")/t)
+def tool_dir(o,t):return stage_dir(o,t,default_profile="airflow")
 def delegated_tool_dir(o,t):return once_tools.tool_dir(o,t)
-def credential_env(o,*slots):
- m={}
- for s in [*slots,"provider-backend"]:m.update(tofu_env(o,s))
- r={v:str(o[k]) for k,v in m.items() if o.get(k) not in(None,"")};return r or None
+def credential_env(o,*slots):return tool_env(providers,o,[*slots,"provider-backend"])
 def backend_credential_env(o):return credential_env(o)
 def fallback_compute_params(o):
  n=str(o.get("profile")or"airflow");p=o.get("provider-compute")

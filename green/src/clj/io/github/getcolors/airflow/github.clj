@@ -427,18 +427,15 @@
              commands (if delete?
                         (revoke-commands opts)
                         (create-commands opts {:exists? (repo-exists? opts run-fn)}))
-             failure (reduce
-                      (fn [_ {:keys [args label]}]
-                        (let [result (run-fn (vec args)
-                                             {:extra-env (token-env opts)}
-                                             run-timeout-ms)]
-                          (if (or delete? (zero? (:exit result -1)))
-                            nil
-                            (reduced (format "gh failed for %s: %s"
-                                             label
-                                             (str/trim (str (:err result))))))))
-                      nil
-                      commands)
+             result (process/run-plan
+                     commands
+                     {:runner (fn [{:keys [args]}]
+                                (run-fn (vec args) {:extra-env (token-env opts)} run-timeout-ms))
+                      :continue? (fn [_ _] delete?)})
+             failure (when-not (zero? (:exit result))
+                       (format "gh failed for %s: %s"
+                               (get-in result [:command :label])
+                               (str/trim (str (:err result)))))
              ;; Seeded after the credentials and only on create, over SSH rather
              ;; than through the API. The ordering is the same as it always was
              ;; and is load-bearing on a first run: pushing the seed before the

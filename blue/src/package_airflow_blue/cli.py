@@ -1,12 +1,8 @@
 import asyncio,sys
-from pathlib import Path
-from blue.cli import run_cli
+from blue.cli import find_up,run_cli
 from .workflow import airflow_workflow
 USAGE="Usage: blue <build|create|delete> [-f|--file colors.yml] [--dry-run]"
-def find():
- for d in[Path.cwd().resolve(),*Path.cwd().resolve().parents]:
-  if(d/"colors.yml").exists():return str(d/"colors.yml")
- return"colors.yml"
+def find():return find_up("colors.yml")or"colors.yml"
 def default_args(a):return a if any(x in("-f","--file")or x.startswith("--file=")for x in a)else[*a,"-f",find()]
 async def run(*a):
  a=default_args(list(a));c=a[0]if a else None

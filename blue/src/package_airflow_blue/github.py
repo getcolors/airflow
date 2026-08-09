@@ -1,5 +1,6 @@
 import shutil,tempfile
 from pathlib import Path
+from blue.process import run_plan
 from blue.runtime import runtime
 async def default_run(a,env=None,timeout_ms=30000):return await runtime.exec(a,env=env,timeout_ms=timeout_ms)
 PLACE="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBUILDPLACEHOLDER0000000000000000000000"
@@ -47,9 +48,7 @@ async def github_step(o,run=None):
  if ev not in("create","delete")or not repo(o):return o
  if not delete:o={**o,"airflow/known-hosts":await fetch_host_key(o,run)}
  cmds=revoke_commands(o)if delete else([*([]if await repo_exists(o,run)else create_repo_commands(o)),*[c for k in o.get("airflow/deploy-keys")or[]for c in publish_commands(o,k)]])
- fail=None
- for c in cmds:
-  x=await run(c["args"],env={"GH_TOKEN":str(o.get("github-token"))})
-  if x.exit and not delete:fail=f"gh failed for {c['label']}: {str(x.err).strip()}";break
+ result=await run_plan(cmds,runner=lambda c:run(c["args"],env={"GH_TOKEN":str(o.get("github-token"))}),continue_on_error=lambda *_:delete)
+ fail=f"gh failed for {result['command']['label']}: {str(result['err']).strip()}"if result["exit"]else None
  if not delete and not fail:fail=await seed_repo(o,o.get("airflow/seed-files")or[],run)
  z=cleanup(o);return{**z,"blue/exit":1,"blue/err":fail}if fail else{**z,"blue/exit":0}

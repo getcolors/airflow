@@ -14,7 +14,7 @@ wheels = [
 [[package]]
 name = "blue"
 version = "0.1.0"
-source = { git = "https://github.com/getcolors/blue.git?rev=7dd17ac920060f622f9f98b503bbe36e35d730ec#7dd17ac920060f622f9f98b503bbe36e35d730ec" }
+source = { git = "https://github.com/getcolors/blue.git?rev=369c5aafea790a03b649b3513003651e672f3f57#369c5aafea790a03b649b3513003651e672f3f57" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -55,8 +55,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "blue", git = "https://github.com/getcolors/blue.git?rev=7dd17ac920060f622f9f98b503bbe36e35d730ec" },
-    { name = "package-once-blue", git = "https://github.com/getcolors/once.git?subdirectory=blue&rev=031b89ce31117d6c786123dc352d8b8fb27669e4" },
+    { name = "blue", git = "https://github.com/getcolors/blue.git?rev=369c5aafea790a03b649b3513003651e672f3f57" },
+    { name = "package-once-blue", git = "https://github.com/getcolors/once.git?subdirectory=blue&rev=98d3cfa2c743b89a72bac0252c258f9edeedcad7" },
 ]
 
 [package.metadata.requires-dev]
@@ -68,7 +68,7 @@ dev = [
 [[package]]
 name = "package-once-blue"
 version = "0.1.0"
-source = { git = "https://github.com/getcolors/once.git?subdirectory=blue&rev=031b89ce31117d6c786123dc352d8b8fb27669e4#031b89ce31117d6c786123dc352d8b8fb27669e4" }
+source = { git = "https://github.com/getcolors/once.git?subdirectory=blue&rev=98d3cfa2c743b89a72bac0252c258f9edeedcad7#98d3cfa2c743b89a72bac0252c258f9edeedcad7" }
 dependencies = [
     { name = "blue" },
 ]
