@@ -1,20 +1,11 @@
 (ns io.github.getcolors.airflow.validate
-  "This package's desired-state rules, driven by ONCE's provider registry.
-
-  The registry is consumed as data rather than reimplemented. It is the single
-  place recording, per provider, the non-secret keys its templates interpolate
-  and the credentials it needs, and keeping one copy is what stops a provider
-  being validated against one set of keys and run with another.
-
-  Unlike walter, which drives it over two slots, this package fills all four:
-  it provisions a machine, stores state, manages DNS and sends mail.
-
-  Nothing upstream promises this registry's shape. `scripts/golden.sh` is what
-  actually catches a change to it — see plans/0001-airflow-v1.md."
+  "Application validation and shared compute requirements."
   (:require
    [clojure.string :as str]
    [green.cli :as green-cli]
-   [io.github.getcolors.once.validate :as once-validate]))
+   [io.github.getcolors.once.validate :as once-validate]
+   [io.github.getcolors.compute :as compute]
+   [io.github.getcolors.airflow.machine :as machine]))
 
 (def providers
   "ONCE's provider registry, verbatim."
@@ -22,7 +13,7 @@
 
 (def slots
   "Every provider slot ONCE defines. This package fills all four."
-  [:provider-compute :provider-smtp :provider-dns :provider-backend])
+  [:provider-smtp :provider-dns])
 
 (def stoppable
   "Compute providers this package can power cycle.
@@ -104,7 +95,7 @@
   harmless because the template that would read them is never rendered. These
   are the ones where a placeholder is not harmless: the gate fires and the
   placeholder reaches the generated file verbatim."
-  [:caddy-acme-email :digitalocean-vpc-uuid :oci-image-id])
+  [:caddy-acme-email])
 
 (defn- leftover-placeholders
   [opts]
@@ -155,6 +146,8 @@
   [opts]
   (vec
    (concat
+    (machine/errors opts)
+    (when (false? (:digitalocean-firewall opts)) ["digitalocean-firewall=false is retired; compute firewall rules are required"])
     (map #(str % " is required")
          (missing-keys opts (concat [:profile :workdir]
                                     own-required
@@ -265,4 +258,4 @@
   `COLORS_PAR_*` variable supplied."
   [opts]
   (map #(str "required credential is not set: " (green-cli/par-name %))
-       (distinct (missing-keys opts (concat own-secrets (slot-keys opts :secrets))))))
+       (distinct (missing-keys opts (concat own-secrets (slot-keys opts :secrets) (map #(-> % (str/replace #"^COLORS_PAR_" "") str/lower-case (str/replace "_" "-") keyword) (compute/credential-requirements opts)))))))

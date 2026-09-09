@@ -1,44 +1,5 @@
 (ns io.github.getcolors.airflow.tools
-  "The step functions, their template specs, and the generated inventory.
-
-  This package reuses far more of ONCE than walter does, and the difference is
-  worth stating rather than discovering. Walter consumes two things: the
-  provider registry as data, and the compute templates by classpath keyword.
-  Both are *resources*, which `scripts/golden.sh` can hold still.
-
-  This package consumes six, and three of them are step **functions**:
-
-    1. `once.validate/providers`           — the registry, as data
-    2. `once.tools.tofu.<provider>/main.tf` — the compute template, by classpath
-    3. `once.tools/tofu-smtp-step`          — a function
-    4. `once.tools/tofu-dns-step`           — a function
-    5. `once.tools/tofu-smtp-post-step`     — a function
-    6. `once.tools/tool-dir`                — a function, for the three above
-
-  Nothing upstream promises any of that. ONCE's `utils/contract` versions the
-  launcher handshake, not a library API, and ONCE's own rules treat its
-  internals as free to move as long as three colours move together. The three
-  step functions are the exposed part: they take `opts` and return `opts`, so a
-  changed key inside one fails at run time rather than at compile time.
-
-  Two consequences follow from delegating, and both are load-bearing:
-
-  * **The delegated stage directories cannot be renamed.** Each ONCE step
-    hard-codes its own — `(tool-dir opts \"tofu-dns\")` is inside
-    `tofu-dns-step`, not a parameter. Renaming means forking the three steps,
-    which forfeits the reuse that motivated delegating at all. So this package's
-    state keys are `<profile>/airflow-compute.tfstate` for its own stage but
-    `<profile>/tofu-dns.tfstate`, `<profile>/tofu-smtp.tfstate` and
-    `<profile>/tofu-smtp-post.tfstate` for the three delegated ones — the same
-    keys ONCE writes. `profile` alone is what separates this project from a
-    once-colors, where walter has two independent separations.
-
-  * **`tofu-dns-step` reads `:once/compute-params`** to find the address it
-    points DNS at. That is an internal key of ONCE's, not a documented
-    interface, and this package's own compute step publishes it deliberately.
-
-  `scripts/golden.sh` is the whole mitigation. Bump the ONCE pin deliberately
-  and read the diff rather than accepting it."
+  "Application steps and adapters for library compute, ONCE DNS and SMTP."
   (:require
    [cheshire.core :as json]
    [clojure.java.io :as io]
@@ -51,6 +12,7 @@
    [green.tofu :as tofu]
    [green.workflow :as wf]
    [io.github.getcolors.airflow.github :as github]
+   [io.github.getcolors.airflow.machine :as machine]
    [io.github.getcolors.airflow.utils :as utils]
    [io.github.getcolors.airflow.validate :as validate]
    [io.github.getcolors.once.tools :as once-tools]))
@@ -94,7 +56,6 @@
 ;; templates
 
 (def ^:private airflow-root "io.github.getcolors.airflow.tools")
-(def ^:private once-root "io.github.getcolors.once.tools")
 
 (def ^:private template-opts
   "Selmer reads `<{ var }>` and `<% if %>`, leaving `{{ }}` and `{% %}` to
@@ -122,10 +83,6 @@
   them agreeing after a pin bump."
   [opts tool]
   (once-tools/tool-dir opts tool))
-
-(defn- once-template
-  [tool provider file]
-  (keyword (str once-root "." tool "." provider) file))
 
 (defn- airflow-template
   [tool file]
@@ -159,111 +116,8 @@
 ;; ---------------------------------------------------------------------------
 ;; compute
 
-(defn fallback-compute-params
-  "What a build or a dry-run stands in for the values only a real apply knows.
-
-  Rendering must never need state, or `build` would stop being credential-free
-  — and the DNS stage interpolates the address, so without this a build would
-  have to reach for OpenTofu output before it could render a zone file.
-
-  The shapes match ONCE's, because the delegated DNS step consumes them."
-  [{:keys [profile provider-compute] :as opts}]
-  (let [name (or profile "airflow")]
-    (case provider-compute
-      "azure" {:ip "192.168.0.1" :sudoer "ubuntu" :uid "1000" :name name :user "ubuntu"}
-      "aws" {:ip "192.168.0.1" :sudoer "ubuntu" :uid "1000" :name name :user "ubuntu"}
-      "google" {:ip "192.168.0.1" :sudoer "ubuntu" :uid "1000" :name name :user "ubuntu"}
-      "digitalocean" {:ip "192.168.0.1" :sudoer "root" :name name :user "root"}
-      "hcloud" {:ip "192.168.0.1" :sudoer "root" :name name :user "root"}
-      "oci" {:ip "192.168.0.1" :sudoer "ubuntu" :uid "1001" :name name :user "ubuntu"}
-      "yandex" {:ip "192.168.0.1" :sudoer "ubuntu" :uid "1000" :name name :user "ubuntu"}
-      "no-infra" (cond-> {:ip (or (:no-infra-compute-ip opts) "192.168.0.1")
-                          :sudoer (or (:no-infra-compute-sudoer opts) "root")
-                          :name name
-                          :user (or (:no-infra-compute-user opts) "root")}
-                   (:no-infra-compute-uid opts) (assoc :uid (:no-infra-compute-uid opts)))
-      {:ip "192.168.0.1" :sudoer "root" :name name :user "root"})))
-
-(defn cidr-list
-  "The CIDRs under `k`, trimmed and with blanks dropped.
-
-  A YAML list is the shape colors.yml wants. A plain string is accepted too, and
-  not as a convenience: `green.cli/read-pars` overlays `COLORS_PAR_*` onto flat
-  keys as strings, so without this, setting `COLORS_PAR_DIGITALOCEAN_SSH_SOURCES`
-  would replace the vector with a string and render one impossible CIDR — which
-  OpenTofu would reject only once the apply reached the provider.
-
-  Defaults to the whole internet rather than to nothing. An empty list renders a
-  firewall rule that admits no one, and a machine you cannot reach is a worse
-  failure than the open port the default already documents."
-  [opts k]
-  (let [v (get opts k)
-        xs (if (sequential? v) v (str/split (str v) #"[,\s]+"))
-        xs (->> xs (map (comp str/trim str)) (remove str/blank?) vec)]
-    (if (seq xs) xs ["0.0.0.0/0" "::/0"])))
-
-(defn firewall?
-  "Whether to render the firewall beside ONCE's compute template.
-
-  DigitalOcean only, because `firewall.tf` names `digitalocean_droplet.node1`.
-  On any other provider the key is accepted and ignored rather than refused: the
-  answer to \"is there a firewall\" is then the provider's own, and refusing
-  would make a shared colors.yml unportable for no gain."
-  [opts]
-  (and (= "digitalocean" (:provider-compute opts))
-       (not (false? (:digitalocean-firewall opts)))))
-
-(defn compute-specs
-  "ONCE's provider template, plus — on DigitalOcean — this package's firewall.
-
-  OpenTofu merges every .tf in a directory, so the firewall needs no change to
-  ONCE's template and no fork of it. That is the same trick walter uses to
-  publish an instance id, and it is the reason the reuse survives at all.
-
-  The address `firewall.tf` names, `digitalocean_droplet.node1`, is ONCE's;
-  `scripts/golden.sh` asserts it is still declared upstream, because a rename
-  there would otherwise surface as an opaque `tofu validate` failure during a
-  real apply."
-  [opts dir]
-  (let [provider (or (:provider-compute opts) "digitalocean")
-        data (assoc opts
-                    :ssh-sources-hcl (tofu/hcl-list (cidr-list opts :digitalocean-ssh-sources))
-                    :http-sources-hcl (tofu/hcl-list (cidr-list opts :digitalocean-http-sources)))]
-    (cond-> [(template-spec (once-template "tofu" provider "main.tf")
-                            (str dir "/main.tf")
-                            data)]
-      (firewall? opts)
-      (conj (template-spec (airflow-template (str "tofu." provider) "firewall.tf")
-                           (str dir "/firewall.tf")
-                           data)))))
-
-(defn- output-params
-  [opts]
-  (some-> (get-in opts [:tofu/outputs :params]) walk/keywordize-keys))
-
-(defn compute-step
-  "Render the compute stage and apply it, adopting the machine's address.
-
-  The adopted params are merged flat into opts *and* kept under
-  `:once/compute-params`. Both matter and for different reasons: the Ansible
-  stage reads `ip` and `user` directly, and ONCE's delegated `tofu-dns-step`
-  reads the namespaced key through its own `joined-params`. Dropping the
-  namespaced one would silently point every DNS record at the fallback
-  192.168.0.1 — a create that succeeds and resolves nowhere."
-  [opts]
-  (let [dir (tool-dir opts compute-tool)
-        specs (compute-specs opts dir)
-        fallback (fallback-compute-params opts)
-        result (tofu/tofu-with-spec opts specs
-                                    {:dir dir
-                                     :env (credential-env opts :provider-compute)})]
-    (cond
-      (wf/failed? result) result
-      (= :build (:green/event opts)) (merge result fallback {:once/compute-params fallback})
-      ;; A destroy has run; there are no outputs left to adopt.
-      (= :delete (:green/event opts)) result
-      :else (let [params (merge fallback (output-params result))]
-              (merge result params {:once/compute-params params})))))
+(def fallback-compute-params machine/fallback-params)
+(def compute-step machine/step)
 
 ;; ---------------------------------------------------------------------------
 ;; the three delegated stages
@@ -463,9 +317,9 @@
   ONCE's builder carries an admin/users split and a `root@host` key convention
   that a single-machine package has no use for, so this is walter's shape: one
   host, one group, keyed by the alias you would `ssh` with."
-  [{:keys [ip user host-alias]}]
+  [{:keys [ip user host-alias ssh-private-key-path]}]
   (json/generate-string
-   {:all {:hosts {(or host-alias "airflow") {:ansible_host ip :ansible_user user}}}}
+   {:all {:hosts {(or host-alias "airflow") (cond-> {:ansible_host ip :ansible_user user} ssh-private-key-path (assoc :ansible_ssh_private_key_file ssh-private-key-path))}}}
    {:pretty true}))
 
 (defn data-fn
@@ -481,7 +335,7 @@
   (let [relay (smtp-relay opts)]
     (merge opts
            relay
-           {:ip (or (not-empty (str (:ip opts))) "192.168.0.1")
+           {:ip (str (:ip opts))
             :user (or (not-empty (str (:user opts))) "root")
             :host-alias (utils/host-alias opts)
             :deploy-user github/deploy-user
@@ -593,9 +447,8 @@
         config {:dir dir
                 :inventory "inventory.ini"
                 :playbooks {:create "main.yml" :delete "main.yml"}
-                :extra-vars {:host_alias (:host-alias data)
-                             :ip (:ip data)
-                             :user (:user data)
+                :extra-vars {:host_alias (:host-alias data) :ssh_hosts [{:name (:host-alias data) :ip (:ip data) :user (:user data) :identity_file (:ssh-private-key-path opts)}]
+                             :colors_keygen (boolean (:ssh-keygen opts))
                              :block_state (if delete? "absent" "present")}}]
     (ansible/ansible-with-spec opts config specs)))
 

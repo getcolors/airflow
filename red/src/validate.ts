@@ -2,7 +2,9 @@ import { parName } from "red/cli";
 import type { Opts } from "red/workflow";
 import { providers } from "package-once-red";
 export { providers };
-export const slots=["provider-compute","provider-smtp","provider-dns","provider-backend"];
+export const slots=["provider-smtp","provider-dns"];
+import {credential_requirements} from "colors-compute-red";
+import * as machine from "./machine.ts";
 export const ownRequired=["airflow-host","airflow-image","airflow-admin-username","caddy-image","airflow-smtp-from","dags-repo","dags-dest","dags-branch","postgres-version","walg-version","walg-r2-bucket","walg-r2-endpoint","walg-r2-region","walg-full-backup-oncalendar","walg-retain-full","walg-max-backup-age-hours","alerts-email"];
 export const ownSecrets=["github-token","postgres-password","airflow-fernet-key","airflow-admin-password","walg-r2-access-key-id","walg-r2-secret-access-key"];
 const entry=(o:Opts,s:string)=>(providers as any)[s]?.[String(o[s])];
@@ -12,10 +14,11 @@ export const placeholder=(x:unknown)=>x==null||(typeof x==="string"&&(!x.trim()|
 const host=/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
 const repo=/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/; const email=/^[^@\s]+@[^@\s]+\.[^@\s]+$/; const release=/^v?\d+(?:\.\d+)*(?:[-.][A-Za-z0-9.]+)?$/;
 export function envErrors(env:Record<string,string|undefined>){return env.COLORS_PAR_PROFILE?["COLORS_PAR_PROFILE is set. This package takes its profile from colors.yml only — run from the project directory rather than overriding it."]:[]}
-export function stateErrors(o:Opts):string[]{const e:string[]=[];
+export function stateErrors(o:Opts):string[]{const e:string[]=machine.errors(o);
+ if(o["digitalocean-firewall"]===false)e.push("digitalocean-firewall=false is retired; compute firewall rules are required");
  for(const k of ["profile","workdir",...ownRequired,...keys(o,"required")])if(placeholder(o[k]))e.push(`${k} is required`);
  for(const s of slots)if(!(providers as any)[s]?.[String(o[s])])e.push(`unsupported ${s} ${JSON.stringify(o[s])}`);
- for(const k of ["caddy-acme-email","digitalocean-vpc-uuid","oci-image-id"])if(k in o&&o[k]!=null&&String(o[k]).trim()&&placeholder(o[k]))e.push(`${k} still says REPLACE_ME — fill it in, or delete the key. An optional key is not treated as absent while it holds a placeholder: it renders into the generated files verbatim.`);
+ for(const k of ["caddy-acme-email"])if(k in o&&o[k]!=null&&String(o[k]).trim()&&placeholder(o[k]))e.push(`${k} still says REPLACE_ME — fill it in, or delete the key. An optional key is not treated as absent while it holds a placeholder: it renders into the generated files verbatim.`);
  if(typeof o["compute-prevent-destroy"]!=="boolean")e.push("compute-prevent-destroy must be true or false");
  if(!placeholder(o["airflow-host"])&&!host.test(String(o["airflow-host"])))e.push("airflow-host must be a fully qualified hostname");
  if(!placeholder(o["dags-repo"])&&!repo.test(String(o["dags-repo"])))e.push("dags-repo must be owner/name");
@@ -29,4 +32,4 @@ export function stateErrors(o:Opts):string[]{const e:string[]=[];
  const cal=String(o["walg-full-backup-oncalendar"]??"");if(!placeholder(cal)&&cal.trim().split(/\s+/).length===5&&!cal.includes(":"))e.push('walg-full-backup-oncalendar looks like a crontab line. It is a systemd OnCalendar expression — daily at 02:00 is "*-*-* 02:00:00", not "0 2 * * *"');
  const from=String(o["airflow-smtp-from"]),h=String(o["airflow-host"]);const zone=h.split(".").slice(-2).join(".");if(o["provider-smtp"]==="resend"&&!placeholder(from)&&!placeholder(h)&&email.test(from)&&!from.endsWith(`@notifications.${zone}`))e.push(`airflow-smtp-from must be under the Resend sending domain notifications.${zone} — that subdomain is what gets verified, not the bare zone`);
  return e.map(x=>x.startsWith(":")?x:x.replace(/^(airflow|dags|postgres|walg|alerts|caddy|compute)-/,"$&"));}
-export function secretErrors(o:Opts){return [...new Set([...ownSecrets,...keys(o,"secrets")])].filter(k=>placeholder(o[k])).map(k=>`required credential is not set: ${parName(k)}`)}
+export function secretErrors(o:Opts){return [...new Set([...ownSecrets,...keys(o,"secrets"),...credential_requirements(o).map(v=>v.replace(/^COLORS_PAR_/,"").toLowerCase().replaceAll("_","-"))])].filter(k=>placeholder(o[k])).map(k=>`required credential is not set: ${parName(k)}`)}

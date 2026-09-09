@@ -5,6 +5,7 @@
    [clojure.string :as str]
    [clojure.test :refer [deftest is testing]]
    [io.github.getcolors.airflow.tools :as tools]
+   [io.github.getcolors.airflow.machine :as machine]
    [io.github.getcolors.airflow.validate-test :refer [fixture]]
    [io.github.getcolors.airflow.workflow :as workflow]))
 
@@ -73,9 +74,8 @@
     (let [result (start :delete every-credential)]
       (is (= 2 (:green/exit result)))
       (is (str/includes? (:green/err result) "COLORS_PAR_COMPUTE_PREVENT_DESTROY"))))
-  (is (= 0 (:green/exit (start :delete
-                               (assoc every-credential
-                                      "COLORS_PAR_COMPUTE_PREVENT_DESTROY" "false"))))))
+  (with-redefs [machine/load-inventory (fn [opts] (assoc opts :green/exit 1 :green/err "missing inventory"))]
+    (is (= 1 (:green/exit (start :delete (assoc every-credential "COLORS_PAR_COMPUTE_PREVENT_DESTROY" "false")))))))
 
 (deftest a-build-takes-a-fixed-placeholder-key
   (testing "a fresh key on every build would break every golden against the last"
@@ -92,7 +92,7 @@
     (is (= "digitalocean" (:provider-compute result)))
     (is (= "cloudflare" (:provider-dns result)))
     (is (= "resend" (:provider-smtp result)))
-    (is (= "local" (:provider-backend result)))
+    (is (= "r2" (:provider-backend result)))
     (is (true? (:compute-prevent-destroy result))
         "protection defaults on, not off")))
 
@@ -168,14 +168,12 @@
 ;; ---------------------------------------------------------------------------
 ;; backends
 
-(deftest the-compute-stage-is-keyed-by-this-packages-own-name
-  (testing "a colliding profile still cannot produce ONCE's compute state key"
-    (let [opts (assoc (fixture) :provider-backend "r2" :workdir (temp-dir))
-          advice (workflow/own-backend-advice tools/compute-tool)]
-      (advice opts)
-      (is (str/includes?
-           (slurp (str (tools/tool-dir opts tools/compute-tool) "/backend.tf.json"))
-           "airflow-fixture/airflow-compute.tfstate")))))
+(deftest compute-state-is-library-owned
+  (let [opts (assoc (fixture) :green/event :build :workdir (temp-dir))]
+    (tools/compute-step opts)
+    (let [backend (slurp (str (tools/tool-dir opts tools/compute-tool) "/shared/backend.tf.json"))]
+      (is (str/includes? backend "compute"))
+      (is (not (str/includes? backend "airflow-compute.tfstate"))))))
 
 (deftest the-delegated-stages-are-keyed-by-ONCEs-names
   (testing "not a choice this package gets to make: each ONCE step computes its
@@ -196,16 +194,8 @@
       (is (.exists (io/file (tools/delegated-tool-dir opts tools/dns-tool)
                             "backend.tf.json"))))))
 
-(deftest a-local-backend-writes-no-remote-key
-  (let [opts (assoc (fixture) :provider-backend "local" :workdir (temp-dir))]
-    ((workflow/own-backend-advice tools/compute-tool) opts)
-    (let [json (slurp (str (tools/tool-dir opts tools/compute-tool)
-                           "/backend.tf.json"))]
-      (is (str/includes? json "local"))
-      (is (not (str/includes? json "airflow-fixture/airflow-compute.tfstate"))))))
-
-;; ---------------------------------------------------------------------------
-;; a whole build
+(deftest local-compute-backend-is-refused
+  (is (seq (machine/errors (assoc (fixture) :provider-backend "local")))))
 
 (deftest a-build-renders-every-stage-this-package-owns
   (testing "the delegated three are ONCE's and are covered by golden.sh, which

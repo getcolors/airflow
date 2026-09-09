@@ -9,7 +9,7 @@ workdir: .colors
 provider-compute: digitalocean
 provider-dns: cloudflare
 provider-smtp: resend
-provider-backend: local
+provider-backend: s3
 
 compute-prevent-destroy: true
 
@@ -152,3 +152,11 @@ google-image-id: projects/ubuntu-os-cloud/global/images/ubuntu-example
 google-subnet-cidr: 10.20.1.0/24
 google-boot-disk-size-gb: 30
 google-ssh-authorized-keys: /tmp/airflow.pub
+
+compute-ssh-sources: ["0.0.0.0/0"]
+compute-http-sources: ["0.0.0.0/0"]
+
+vultr-region: ams
+vultr-plan: vc2-2c-4gb
+vultr-os-id: 2284
+vultr-ssh-key-ids: ["00000000-0000-0000-0000-000000000000"]

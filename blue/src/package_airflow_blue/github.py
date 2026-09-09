@@ -12,7 +12,7 @@ async def generate_keys(o,run=None):
  if not repo(o):return[],None
  run=run or default_run;d=tempfile.mkdtemp(prefix="airflow-deploy");p=str(Path(d)/"key-0");x=await run(["ssh-keygen","-t","ed25519","-N","","-q","-C",key_comment(o),"-f",p])
  return([] ,f"ssh-keygen failed for {repo(o)}: {str(x.err).strip()}")if x.exit else([{"github":repo(o),"public":Path(p+".pub").read_text().strip(),"private-file":p}],None)
-def host_key_args(o):return["ssh","-o","BatchMode=yes","-o","ConnectTimeout=10","-o","StrictHostKeyChecking=accept-new",f"{o.get('user')or'root'}@{o.get('ip')}","cat /etc/ssh/ssh_host_ed25519_key.pub"]
+def host_key_args(o):return["ssh","-o","BatchMode=yes","-o","ConnectTimeout=10","-o","StrictHostKeyChecking=accept-new",*(["-i",str(o["ssh-private-key-path"])] if o.get("ssh-private-key-path") else []),f"{o.get('user')or'root'}@{o.get('ip')}","cat /etc/ssh/ssh_host_ed25519_key.pub"]
 def known_hosts_line(ip,pub):
  p=str(pub or"").strip().split();return f"{ip} {p[0]} {p[1]}"if len(p)>1 and p[0].startswith("ssh-")else None
 async def fetch_host_key(o,run):

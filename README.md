@@ -12,6 +12,10 @@ It is a **Package Skill** on the [Colors](https://github.com/getcolors) SDK — 
 agent-installable CLI — and the third after ONCE and walter. It has interchangeable
 Green (Clojure), Red (TypeScript), and Blue (Python) implementations.
 
+Compute uses the directly pinned `colors-compute` library in all three colors.
+It supports eight VM providers and R2/S3 remote state. Existing legacy compute
+state needs explicit migration before create or delete.
+
 ## Install
 
 ```sh

@@ -11,7 +11,7 @@
   launcher calls — and bump `launcher-contract` in the bundled launcher to
   match. The handshake turns a stale pin into an actionable exit 2 rather than a
   confusing resolution failure."
-  1)
+  2)
 
 (defn host-alias
   "The `~/.ssh/config` Host alias this package manages.

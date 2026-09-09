@@ -1,32 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# This package is a single colour, so there is no parity harness — and ONCE's
-# parity.sh was its golden-file regression net as much as its parity check. This
-# is that net: render every provider variant and diff against committed output.
-#
-# It carries more weight here than it does in walter, and the difference is the
-# whole reason to read this file before changing anything. Walter consumes two
-# things from ONCE, both of them *resources*. This package consumes six, and
-# three of them are step FUNCTIONS — tofu-smtp-step, tofu-dns-step and
-# tofu-smtp-post-step — plus tool-dir, which decides where their backend
-# configuration has to be written. Nothing upstream promises any of it: ONCE's
-# contract number versions the *launcher* handshake, not a library API, and
-# ONCE's own rules treat its internals as free to move as long as three colours
-# move together.
-#
-# So this is not a nice-to-have. It is the only thing standing between an ONCE
-# refactor and a silently broken Airflow deploy.
-#
-#   ./scripts/golden.sh            check
-#   ./scripts/golden.sh --accept   regenerate after an intended change
-#
-# Goldens are rendered against the pins in deps.edn, not against a sibling
-# checkout — bb.edn only local-roots airflow itself. Setting ONCE_LIB_ROOT while
-# running this compares the working tree against the pinned goldens, which is a
-# useful thing to do on purpose and a confusing one to do by accident.
-#
-# Never accept a golden to make it pass without reading why it moved.
+# Render every VM provider and supported backend against pinned dependencies.
+# Review changed artifacts before publishing accepted goldens.
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 state="$root/test/fixtures/colors.yml"
@@ -50,9 +26,14 @@ fail() {
 build_variant() {
   local variant=$1
   shift
+  local fixture="$state"
+  if [ "$variant" = managed ]; then
+    fixture="$tmp/managed-colors.yml"
+    sed '/^digitalocean-ssh-keys:/d' "$state" > "$fixture"
+  fi
   (
     cd "$root/green"
-    env COLORS_PAR_WORKDIR="$tmp/$variant" "$@" bb green build -f "$state" >/dev/null
+    env COLORS_PAR_WORKDIR="$tmp/$variant" "$@" bb green build -f "$fixture" >/dev/null
   )
   # No rendered artefact may carry a real secret into a committed golden.
   # Checked before --accept copies anything. POSIX grep on purpose: a missing
@@ -75,8 +56,7 @@ build_variant() {
   fi
 }
 
-# Every compute provider ONCE's registry offers, because this package fills all
-# four provider slots and any of them can be selected by a consumer.
+# Every compute provider in the shared library.
 build_variant digitalocean
 build_variant azure COLORS_PAR_PROVIDER_COMPUTE=azure
 build_variant aws COLORS_PAR_PROVIDER_COMPUTE=aws
@@ -84,11 +64,10 @@ build_variant google COLORS_PAR_PROVIDER_COMPUTE=google
 build_variant hcloud COLORS_PAR_PROVIDER_COMPUTE=hcloud
 build_variant oci COLORS_PAR_PROVIDER_COMPUTE=oci
 build_variant yandex COLORS_PAR_PROVIDER_COMPUTE=yandex
-build_variant no-infra COLORS_PAR_PROVIDER_COMPUTE=no-infra
+build_variant vultr COLORS_PAR_PROVIDER_COMPUTE=vultr
 
-# The firewall is this package's own HCL rather than ONCE's, and it is the one
-# file whose presence is conditional on a key rather than on a provider.
-build_variant digitalocean-no-firewall COLORS_PAR_DIGITALOCEAN_FIREWALL=false
+# Library-owned SSH key lifecycle uses deterministic build paths.
+build_variant managed
 
 # The other side of the three delegated stages: ONCE ships a no-infra template
 # for DNS and for SMTP, and a consumer pointing at an existing relay and an
@@ -119,23 +98,8 @@ fi
 
 do_compute="$tmp/digitalocean/$profile/airflow-compute"
 
-# ---------------------------------------------------------------------------
-# The resource address this package's firewall.tf depends on.
-#
-# firewall.tf says `digitalocean_droplet.node1.id`, and that resource is
-# declared in ONCE's template, not this one. A rename upstream would otherwise
-# surface as an opaque `tofu validate` failure during a real apply — against
-# live infrastructure, half way through a create.
-
-grep -q 'resource "digitalocean_droplet" "node1"' "$do_compute/main.tf" ||
-  fail "ONCE's DigitalOcean template no longer declares
-  resource \"digitalocean_droplet\" \"node1\"
-which this package's firewall.tf references. Update the pin deliberately."
-echo "  ok — ONCE still declares digitalocean_droplet.node1"
-
-grep -q 'digitalocean_droplet.node1.id' "$do_compute/firewall.tf" ||
-  fail "firewall.tf no longer attaches to digitalocean_droplet.node1"
-echo "  ok — the firewall attaches to it"
+[ -f "$do_compute/shared/backend.tf.json" ] || fail "shared compute backend missing"
+[ -d "$do_compute/nodes" ] || fail "node compute artifacts missing"
 
 # ---------------------------------------------------------------------------
 # The stage names, which are the OpenTofu state keys.
@@ -191,9 +155,9 @@ echo "  ok — every delegated stage gets a backend keyed by profile and stage"
 # checked against the no-infra variant because that is the one whose address
 # comes from desired state rather than from a placeholder.
 
-apps="$tmp/no-infra/$profile/tofu-dns/apps.tf.json"
+apps="$tmp/digitalocean/$profile/tofu-dns/apps.tf.json"
 
-grep -q '"content" : "198.51.100.10"' "$apps" ||
+grep -q '"content" : "192.0.2.10"' "$apps" ||
   fail "the rendered A record does not carry the address desired state names.
 This is the shape check, not the :once/compute-params contract — see tools_test
 for that one — but it still catches a DNS render that stopped reading the
@@ -244,17 +208,6 @@ That is good news, but colors.yml documents the opposite at airflow-host and
 tells the operator to keep this project on a zone of its own. Update that
 comment in the same commit as the pin bump."
 echo "  ok — ONCE still manages zone settings, as colors.yml warns"
-
-# ---------------------------------------------------------------------------
-# The firewall renders only where its resource address exists.
-
-for variant in hcloud oci yandex no-infra digitalocean-no-firewall; do
-  if [ -f "$tmp/$variant/$profile/airflow-compute/firewall.tf" ]; then
-    fail "$variant rendered firewall.tf, which names digitalocean_droplet.node1 —
-a resource that provider's template never declares."
-  fi
-done
-echo "  ok — the firewall renders for DigitalOcean only, and only when asked for"
 
 # ---------------------------------------------------------------------------
 # The deploy key line, which is the security crux.
@@ -315,8 +268,7 @@ echo "  ok — every credential is still an Ansible lookup, not a value"
 #
 # Across every variant rather than one, because a golden only proves output did
 # not change: a NEW template with the same mistake would be accepted, not caught.
-for variant in digitalocean hcloud oci yandex no-infra no-infra-services acme s3 r2 \
-  digitalocean-no-firewall; do
+for variant in digitalocean azure aws google hcloud oci yandex vultr no-infra-services acme s3 r2 managed; do
   if grep -rlE '&#[0-9]+;|&amp;|&quot;' "$tmp/$variant" 2>/dev/null | head -1 | grep -q .; then
     offender=$(grep -rlE '&#[0-9]+;|&amp;|&quot;' "$tmp/$variant" | head -1)
     fail "$variant rendered an HTML entity into ${offender#$tmp/$variant/}.

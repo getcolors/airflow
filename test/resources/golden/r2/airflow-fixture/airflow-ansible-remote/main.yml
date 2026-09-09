@@ -21,7 +21,7 @@
 # the relay password all have to be on the machine for it to work at all.
 - name: Provision the Airflow server
   hosts: all
-  gather_facts: true
+  gather_facts: false
   become: true
 
   handlers:
@@ -36,6 +36,17 @@
         state: restarted
 
   tasks:
+    - name: Wait for SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+
+    - name: Wait for cloud-init when installed
+      ansible.builtin.shell: if command -v cloud-init >/dev/null 2>&1; then cloud-init status --wait; fi
+      changed_when: false
+
+    - name: Gather facts after SSH and cloud-init are ready
+      ansible.builtin.setup:
+
     # Checked before anything is built rather than after, so a missing
     # credential costs a failed connection rather than a half-provisioned
     # machine with an Airflow that cannot reach its database.

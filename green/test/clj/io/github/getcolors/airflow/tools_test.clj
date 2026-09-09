@@ -8,6 +8,8 @@
    [clojure.test :refer [deftest is testing]]
    [green.cli :as green-cli]
    [green.tofu :as tofu]
+   [io.github.getcolors.airflow.machine :as machine]
+   [io.github.getcolors.compute-orchestration :as orchestration]
    [green.workflow :as wf]
    [io.github.getcolors.airflow.github :as github]
    [io.github.getcolors.airflow.tools :as tools]
@@ -30,69 +32,17 @@
 ;; ---------------------------------------------------------------------------
 ;; the compute stage
 
-(deftest the-firewall-renders-for-digitalocean-only
-  (testing "firewall.tf names digitalocean_droplet.node1, which no other
-            provider's template declares"
-    (is (tools/firewall? (fixture)))
-    (doseq [provider ["hcloud" "oci" "yandex" "no-infra"]]
-      (is (not (tools/firewall? (fixture :provider-compute provider)))
-          (str provider " must render no firewall")))))
+(deftest compute-keeps-returned-inventory-for-dns-and-ansible
+  (with-redefs [orchestration/orchestrate
+                (fn [& _] {:status "ready" :cluster {:nodes [{:ip "203.0.113.7" :user "ubuntu" :name "airflow" :provider_id "immutable-id"}]}})]
+    (let [result (tools/compute-step (opts-in :create))]
+      (is (= "203.0.113.7" (:ip result)))
+      (is (= "ubuntu" (:user result)))
+      (is (= (:ip result) (get-in result [:once/compute-params :ip])))
+      (is (= "immutable-id" (get-in result [:colors-compute/cluster :nodes 0 :provider_id]))))))
 
-(deftest the-firewall-can-be-turned-off-but-not-on-elsewhere
-  (is (not (tools/firewall? (fixture :digitalocean-firewall false))))
-  (testing "the key is accepted and ignored on another provider rather than
-            refused, so a shared colors.yml stays portable"
-    (is (not (tools/firewall? (fixture :provider-compute "hcloud"
-                                       :digitalocean-firewall true))))))
-
-(deftest compute-specs-put-the-firewall-beside-ONCEs-template
-  (let [specs (tools/compute-specs (fixture) "/tmp/x")]
-    (is (= 2 (count specs)))
-    (is (= "/tmp/x/main.tf" (:target (first specs))))
-    (is (= "/tmp/x/firewall.tf" (:target (second specs))))
-    (testing "ONCE's template is reached by classpath keyword, not forked"
-      (is (= :io.github.getcolors.once.tools.tofu.digitalocean/main.tf
-             (:template (first specs)))))))
-
-(deftest cidr-lists-survive-a-parameter-override
-  (testing "read-pars overlays COLORS_PAR_* onto flat keys as strings, so
-            without this a COLORS_PAR_DIGITALOCEAN_SSH_SOURCES would replace the
-            vector with one impossible CIDR that OpenTofu only rejects at apply"
-    (is (= ["10.0.0.0/8" "192.0.2.0/24"]
-           (tools/cidr-list {:k "10.0.0.0/8,192.0.2.0/24"} :k)))
-    (is (= ["10.0.0.0/8" "192.0.2.0/24"]
-           (tools/cidr-list {:k ["10.0.0.0/8" " 192.0.2.0/24 "]} :k))))
-  (testing "and an empty list opens rather than closes: a machine you cannot
-            reach is a worse failure than the open port the default documents"
-    (is (= ["0.0.0.0/0" "::/0"] (tools/cidr-list {} :k)))
-    (is (= ["0.0.0.0/0" "::/0"] (tools/cidr-list {:k []} :k)))))
-
-;; ---------------------------------------------------------------------------
-;; the undocumented contract with ONCE
-;;
-;; scripts/golden.sh cannot reach this, and the reason is worth stating: on a
-;; build, this package's fallback compute params and ONCE's are the same map by
-;; construction, so a rendered A record looks identical whether or not the key
-;; is published. Only a create tells them apart, and only these tests run one.
-
-(deftest compute-step-publishes-the-key-ONCEs-dns-step-reads
-  (testing "ONCE's tofu-dns-step reads :once/compute-params. Its own compute
-            step sets that key; this package's compute step is its own, so it
-            must publish it too — dropping it would fall through to ONCE's
-            fallback and point every A record at 192.168.0.1, a create that
-            succeeds and resolves nowhere."
-    (with-redefs [tofu/tofu-step
-                  (fn [opts _] (assoc opts
-                                      :green/exit 0
-                                      :tofu/outputs {:params {"ip" "203.0.113.7"
-                                                              "user" "root"
-                                                              "sudoer" "root"
-                                                              "name" "airflow"}}))]
-      (let [result (tools/compute-step (opts-in :create))]
-        (is (= "203.0.113.7" (:ip result))
-            "the address is merged flat for the Ansible stages")
-        (is (= "203.0.113.7" (get-in result [:once/compute-params :ip]))
-            "and kept namespaced for ONCE's delegated DNS step")))))
+(deftest fallback-cannot-hide-missing-live-inventory
+  (is (thrown? Exception (tools/fallback-compute-params (opts-in :create)))))
 
 (deftest ONCEs-dns-step-still-reads-that-key
   (testing "the other end of the same contract, and the one that breaks on a pin
@@ -203,12 +153,11 @@
       (is (= "{{ lookup('env','COLORS_PAR_NO_INFRA_SMTP_PASSWORD') }}"
              (:smtp-password-lookup data))))))
 
-(deftest a-build-never-reaches-for-state
-  (testing "the address and login are guaranteed present, or a build would have
-            to read OpenTofu output before it could render a playbook"
-    (let [data (tools/data-fn (dissoc (fixture) :ip :user))]
-      (is (= "192.168.0.1" (:ip data)))
-      (is (= "root" (:user data))))))
+(deftest build-inventory-comes-from-library-plan
+  (let [opts (opts-in :build)
+        data (tools/data-fn (merge opts (tools/fallback-compute-params opts)))]
+    (is (= "192.0.2.10" (:ip data)))
+    (is (= "root" (:user data)))))
 
 (deftest the-inventory-names-one-host-by-its-ssh-alias
   (let [parsed (json/parse-string (tools/inventory {:ip "203.0.113.7"
@@ -471,3 +420,11 @@
       (is (str/includes? playbook "/usr/local/bin/walg-check"))
       (is (not (str/includes? playbook "airflow_walg_backups"))
           "the old empty-archive probe must be gone"))))
+
+(deftest returned-identity-reaches-inventory-and-host-key-probe
+  (let [opts (fixture :ip "203.0.113.7" :user "ubuntu" :ssh-private-key-path "/tmp/test-key")
+        inventory (json/parse-string (tools/inventory (tools/data-fn opts)) true)
+        args (github/host-key-args opts)]
+    (is (= "/tmp/test-key" (get-in inventory [:all :hosts :airflow-fixture :ansible_ssh_private_key_file])))
+    (is (= ["-i" "/tmp/test-key"] (subvec args 7 9)))
+    (is (some #{"ubuntu@203.0.113.7"} args))))

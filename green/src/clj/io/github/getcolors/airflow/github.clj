@@ -149,10 +149,11 @@
   server is on every deploy and starts comparing against a value captured once,
   so a substituted key is detected from then on."
   [opts]
-  ["ssh" "-o" "BatchMode=yes" "-o" "ConnectTimeout=10"
-   "-o" "StrictHostKeyChecking=accept-new"
-   (str (or (:user opts) "root") "@" (:ip opts))
-   "cat /etc/ssh/ssh_host_ed25519_key.pub"])
+  (vec (concat ["ssh" "-o" "BatchMode=yes" "-o" "ConnectTimeout=10"
+                "-o" "StrictHostKeyChecking=accept-new"]
+               (when-let [path (:ssh-private-key-path opts)] ["-i" path])
+               [(str (or (:user opts) "root") "@" (:ip opts))
+                "cat /etc/ssh/ssh_host_ed25519_key.pub"])))
 
 (defn known-hosts-line
   "A known_hosts entry for `ip` from an `ssh_host_*.pub` file's contents. The

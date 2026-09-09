@@ -7,8 +7,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "package-once-red": "github:getcolors/once#98d3cfa2c743b89a72bac0252c258f9edeedcad7",
-    "red": "github:getcolors/red#48076768e8954030904b7d966fe636c4c01592ce"
+    "package-once-red": "github:getcolors/once#a1fe1be7a427dd2e406ff7befd1c43a53e7c3618",
+    "colors-compute-red": "github:getcolors/colors-compute#01635b47b3ca328402924418cb822180df2e7a3f"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",

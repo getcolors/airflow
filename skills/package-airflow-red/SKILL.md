@@ -1,13 +1,14 @@
 ---
 name: package-airflow-red
-description: Creates and operates a single-node Apache Airflow server with Red, OpenTofu and Ansible — Airflow under Docker with LocalExecutor, a host Postgres backed up to R2 with WAL-G, TLS and authentication through Caddy, and DAGs pushed from GitHub Actions over rsync. Use when initializing an airflow project, generating colors.yml, selecting a compute, DNS, SMTP or state provider, building or dry-running configuration, provisioning or destroying the server, or restoring the metadata database.
+description: Creates and operates a single-node Apache Airflow server with Red, OpenTofu and Ansible. Airflow under Docker with LocalExecutor, a host Postgres backed up to R2 with WAL-G, TLS and authentication through Caddy, and DAGs pushed from GitHub Actions over rsync. Use when initializing an airflow project, generating colors.yml, selecting a compute, DNS, SMTP or state provider, building or dry-running configuration, provisioning or destroying the server, or restoring the metadata database.
 license: MIT
 ---
 
 # An Apache Airflow server, with Colors
 
 Use this skill to initialize or operate an airflow project in the user's current
-directory. It provisions one VPS running Airflow, a host Postgres archiving
+directory. Compute and its R2 or S3 state use the directly pinned `colors-compute` library.
+It provisions one VPS running Airflow, a host Postgres archiving
 continuously to object storage, and a Caddy that terminates TLS and holds the
 only login. DAGs are pushed to it from a GitHub Actions workflow.
 
@@ -33,7 +34,7 @@ ambient AWS credential chain.
   project's state from another Colors project's in the same bucket.
 - **`COLORS_PAR_AIRFLOW_FERNET_KEY` is part of the backup.** It encrypts every
   stored Airflow connection. Restoring a database with a different one leaves
-  those connections undecryptable — a broken restore that looks like a
+  those connections undecryptable. a broken restore that looks like a
   successful one until a DAG uses a connection. Never regenerate it for an
   existing deployment, and make sure the user has it stored somewhere that
   survives the machine.
@@ -53,7 +54,7 @@ ambient AWS credential chain.
   `COLORS_PAR_COMPUTE_PREVENT_DESTROY=false` rather than editing desired state.
 - `delete` does **not** delete the DAG repository, and must not be described as
   if it might. It revokes the deploy key and clears the Actions environment.
-- Never edit anything under `.colors/` — it is generated output.
+- Never edit anything under `.colors/`. it is generated output.
 
 Read [references/configuration.md](references/configuration.md) before
 generating or changing desired state, and before any real `create` or `delete`.
@@ -64,25 +65,22 @@ generating or changing desired state, and before any real `create` or `delete`.
 ./red build                # render .colors/<profile>/ only; contacts nothing
 ./red create --dry-run     # print the graph; touches nothing
 ./red create               # provision, configure, and publish the deploy key
-./red delete               # revoke the key, then destroy — the repo is kept
+./red delete               # revoke the key, then destroy. the repo is kept
 ```
 
 `-f/--file` overrides the `colors.yml` found by walking up from the working
 directory.
 
-There is no `stop`, no `start` and no `describe`. The power verbs are walter's
-and are implemented for OCI only; an Airflow scheduler runs continuously anyway,
-so a box that cannot be parked costs nothing that was not already being paid.
+There is no `stop`, no `start` and no `describe`. Airflow runs continuously and exposes no power operations.
 
 ## What a create does, in order
 
 ```text
-start ─ compute ─ smtp ─ dns ─ smtp-post ─┬─ ansible-local
-                                          ├─ ansible-remote
-                                          └─ github
+start -> compute -> smtp -> dns -> smtp-post -> ansible-local
+                                          -> ansible-remote -> github
 ```
 
-1. **compute** provisions the VPS and, on DigitalOcean, a firewall.
+1. **compute** invokes the library for one host, its firewall, SSH key ownership, and remote state. It returns the complete node inventory for DNS and Ansible.
 2. **smtp** registers `notifications.<zone>` at Resend.
 3. **dns** points the host at the machine and publishes the verification records.
 4. **smtp-post** verifies the sending domain now that DNS resolves.
@@ -90,8 +88,8 @@ start ─ compute ─ smtp ─ dns ─ smtp-post ─┬─ ansible-local
 6. **ansible-remote** installs Docker, Postgres, WAL-G, Airflow, Caddy and the
    deploy account.
 7. **github** creates the DAG repository if it is missing, publishes the deploy
-   key to an Actions environment named after the profile, and — only for a
-   repository this run created — seeds a workflow and a hello-world DAG.
+   key to an Actions environment named after the profile, and. only for a
+   repository this run created. seeds a workflow and a hello-world DAG.
 
 The SMTP ordering is why steps 2–4 cannot be collapsed: the sending domain must
 exist before its verification records can be rendered into DNS, and DNS must be
@@ -158,5 +156,5 @@ Before recommending it, check three things with the user:
 
 Say what actually happened. If Ansible failed at a task, name the task. If a
 `gh` call failed, say which credential it was publishing. Never report a
-successful `build` as evidence that a `create` would work — it renders from
+successful `build` as evidence that a `create` would work. it renders from
 desired state alone and contacts nothing.

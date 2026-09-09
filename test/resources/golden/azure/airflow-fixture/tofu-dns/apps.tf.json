@@ -2,7 +2,7 @@
   "resource" : {
     "cloudflare_dns_record" : {
       "io_github_getcolors_once_tools_app_dns_airflow_fixture_example" : {
-        "content" : "192.168.0.1",
+        "content" : "192.0.2.10",
         "name" : "airflow.fixture.example",
         "proxied" : true,
         "ttl" : 1,

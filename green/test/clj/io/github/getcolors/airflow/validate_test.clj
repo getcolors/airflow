@@ -4,7 +4,8 @@
    [clojure.string :as str]
    [clojure.test :refer [deftest is testing]]
    [green.cli :as green-cli]
-   [io.github.getcolors.airflow.validate :as validate]))
+   [io.github.getcolors.airflow.validate :as validate]
+   [io.github.getcolors.compute :as compute]))
 
 (def fixture-file "test/fixtures/colors.yml")
 
@@ -27,7 +28,7 @@
 
 (deftest every-provider-slot-is-filled
   (testing "unlike walter, which drives the registry over two slots"
-    (is (= [:provider-compute :provider-smtp :provider-dns :provider-backend]
+    (is (= [:provider-smtp :provider-dns]
            validate/slots))
     (is (every? #(contains? validate/providers %) validate/slots))))
 
@@ -39,10 +40,10 @@
 (deftest every-provider-in-the-registry-can-be-selected
   (testing "a provider the registry offers must render, or the registry is
             promising something this package cannot deliver"
-    (doseq [provider (keys (get validate/providers :provider-compute))]
+    (doseq [provider (map name (keys (:compute compute/registry)))]
       (is (= [] (validate/state-errors (fixture :provider-compute provider)))
           (str "provider-compute " provider " should validate against the fixture")))
-    (doseq [provider (keys (get validate/providers :provider-backend))]
+    (doseq [provider ["s3" "r2"]]
       (is (= [] (validate/state-errors (fixture :provider-backend provider)))
           (str "provider-backend " provider " should validate against the fixture")))))
 

@@ -83,43 +83,12 @@ fi
 # Every provider is no-infra here on purpose: this exercises the launcher, not
 # the templates, and scripts/golden.sh is what covers the real ones.
 
-cat >"$copy/colors.yml" <<'EOF'
-profile: launcher-check
-workdir: .colors
-provider-compute: no-infra
-provider-dns: no-infra
-provider-smtp: no-infra
-provider-backend: local
-compute-prevent-destroy: true
-no-infra-compute-ip: 198.51.100.10
-no-infra-compute-user: root
-no-infra-compute-sudoer: root
-no-infra-compute-uid: 1000
-no-infra-smtp-server: smtp.example.com
-no-infra-smtp-port: 587
-no-infra-smtp-username: launcher-check
-airflow-host: airflow.example.com
-airflow-image: apache/airflow:3.1.3
-airflow-admin-username: admin
-airflow-smtp-from: airflow@notifications.example.com
-caddy-image: caddy:2.11.4
-dags-repo: example/dags
-dags-dest: /srv/airflow/dags
-dags-branch: main
-postgres-version: 16
-walg-version: v3.0.8
-walg-r2-bucket: launcher-check
-walg-r2-endpoint: https://example.r2.cloudflarestorage.com
-walg-r2-region: auto
-walg-full-backup-oncalendar: "*-*-* 02:00:00"
-walg-retain-full: 7
-walg-max-backup-age-hours: 30
-alerts-email: ops@example.com
-EOF
+cp "$root/test/fixtures/colors.yml" "$copy/colors.yml"
+sed -i 's/profile: airflow-fixture/profile: launcher-check/' "$copy/colors.yml"
 
 out=$( (cd "$copy" && AIRFLOW_LIB_ROOT="$root/green" ./green build 2>&1) ) ||
   fail "AIRFLOW_LIB_ROOT did not resolve the working tree: $out"
-[ -f "$copy/.colors/launcher-check/airflow-compute/main.tf" ] ||
+[ -f "$copy/.colors/launcher-check/airflow-compute/shared/backend.tf.json" ] ||
   fail "the override resolved but rendered nothing"
 ok "AIRFLOW_LIB_ROOT resolves a working tree from a copied payload"
 
@@ -132,7 +101,7 @@ ok "AIRFLOW_LIB_ROOT resolves a working tree from a copied payload"
 mkdir -p "$copy/deep/nested"
 out=$( (cd "$copy/deep/nested" && AIRFLOW_LIB_ROOT="$root/green" ./../../green build 2>&1) ) ||
   fail "running from a subdirectory failed: $out"
-[ -f "$copy/.colors/launcher-check/airflow-compute/main.tf" ] ||
+[ -f "$copy/.colors/launcher-check/airflow-compute/shared/backend.tf.json" ] ||
   fail "a subdirectory run rendered somewhere other than beside colors.yml"
 ok "finds colors.yml by walking up, and renders beside it"
 

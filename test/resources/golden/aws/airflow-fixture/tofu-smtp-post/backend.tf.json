@@ -1,7 +1,11 @@
 {
   "terraform" : {
     "backend" : {
-      "local" : { }
+      "s3" : {
+        "bucket" : "airflow-fixture-state",
+        "key" : "airflow-fixture/tofu-smtp-post.tfstate",
+        "region" : "eu-central-1"
+      }
     }
   }
 }

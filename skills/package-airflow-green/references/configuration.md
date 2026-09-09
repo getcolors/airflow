@@ -20,7 +20,7 @@ are commented out rather than filled with a placeholder.
 
 `profile` must be unique across every Colors project the user has. It is the
 only thing separating this project's OpenTofu state from another's in a shared
-bucket, for three of the four stages — see "State keys" below.
+bucket, for three of the four stages. see "State keys" below.
 
 **Never export `COLORS_PAR_PROFILE`.** The overlay happens before any step runs,
 so the package refuses to start rather than checking for a wrong value.
@@ -29,50 +29,42 @@ so the package refuses to start rather than checking for a wrong value.
 
 | Key | Choices |
 |---|---|
-| `provider-compute` | `digitalocean`, `hcloud`, `oci`, `yandex`, `no-infra` |
+| `provider-compute` | `azure`, `aws`, `google`, `digitalocean`, `hcloud`, `vultr`, `yandex`, `oci` |
 | `provider-dns` | `cloudflare`, `no-infra` |
 | `provider-smtp` | `resend`, `no-infra` |
-| `provider-backend` | `local`, `s3`, `r2` |
+| `provider-backend` | `s3`, `r2` |
 
-Each selection brings its own required keys and credentials. The registry is
-ONCE's, consumed as data, so it is the single place recording both.
+The directly pinned `colors-compute` library owns compute provider validation,
+credentials, networking, SSH key ownership, lifecycle and remote state. New compute
+providers require a library version bump in each color's dependency manifest.
+ONCE supplies the DNS and SMTP stages.
 
-### DigitalOcean
+Azure uses the ambient Azure CLI session, AWS its ambient credential chain,
+Google Application Default Credentials, and OCI `oci-config-file-profile` from
+`~/.oci/config`. DigitalOcean, Hetzner, Vultr and Yandex use `COLORS_PAR_DO_TOKEN`,
+`COLORS_PAR_HCLOUD_TOKEN`, `COLORS_PAR_VULTR_API_KEY` and `COLORS_PAR_YANDEX_TOKEN`.
 
-`digitalocean-name`, `-region`, `-size`, `-image`, `-ssh-keys`, and optionally
-`-vpc-uuid`. Credential: `COLORS_PAR_DO_TOKEN`.
+Set `compute-ssh-sources` and `compute-http-sources` to explicit CIDR lists.
+They admit TCP 22 and TCP 80/443. Provider-prefixed source keys remain library
+aliases. The package rejects `digitalocean-firewall: false`; compute firewall
+rules are required. GitHub DAG sync needs access to TCP 22.
 
-`digitalocean-ssh-keys` is interpolated into a single-element list, so exactly
-one key is supported. A DigitalOcean VPC is region-scoped, so `-vpc-uuid` has to
-live in `-region` or the apply fails on a mismatch rather than on anything
-naming the real cause.
+Omitting the selected provider's SSH key setting lets the library own one
+profile keypair and provider registration. External mode uses the selected
+provider's existing key selection. Empty or null settings are invalid.
+The returned private-key path reaches Ansible and the GitHub host-key probe.
+Only managed mode writes IdentityFile and IdentitiesOnly into the profile SSH
+config block. Application deploy keys remain separate, restricted to rsync.
 
-Size the box for what it must run continuously. 4 GB is the practical floor —
-DAG parsing is what runs out of memory first, and it does so as import errors
-rather than as an obvious OOM. Resizing a droplet's CPU and RAM is reversible;
-growing its disk is not.
-
-#### The firewall
-
-`digitalocean-firewall: true` renders a `digitalocean_firewall` beside ONCE's
-droplet. This is the package's own HCL — ONCE creates no firewall, and a droplet
-without one sits on the public internet with every listening port exposed.
-
-`digitalocean-ssh-sources` and `digitalocean-http-sources` are lists of CIDRs,
-defaulting to the whole internet. Port 22 is open by design rather than by
-omission: the DAG sync is pushed from GitHub-hosted runners whose addresses come
-from large, changing ranges. What protects it is key-only authentication plus the
-rrsync ForceCommand.
-
-Managing the firewall in OpenTofu rather than with ufw on the box is deliberate:
-a firewall configured only inside the machine is invisible to `build` and to
-anyone reading desired state.
+A public DigitalOcean singleton uses its implicit default VPC unless
+`digitalocean-vpc-uuid` references an existing region-matching VPC. The library
+validates and references that VPC without owning it. No-infra compute is removed.
 
 ### Cloudflare
 
 No non-secret keys. Credential: `COLORS_PAR_CLOUDFLARE_API_TOKEN`.
 
-The zone is derived from `airflow-host` — its last two labels — and the token has
+The zone is derived from `airflow-host`. its last two labels. and the token has
 to reach it.
 
 **This zone must not be one another Colors project already manages.** The reused
@@ -86,7 +78,7 @@ That constrains the zone as a whole: anything else served from it inherits
 
 ### Resend
 
-No non-secret keys — the relay is identical for every account. Credentials:
+No non-secret keys. the relay is identical for every account. Credentials:
 `COLORS_PAR_RESEND_API_KEY` and `COLORS_PAR_RESEND_PASSWORD`.
 
 One sending domain, `notifications.<zone>`, is created and verified for you.
@@ -101,9 +93,8 @@ what gets verified, and Resend rejects mail from it.
 
 `r2` needs `r2-bucket` and `r2-endpoint`, plus `COLORS_PAR_R2_ACCESS_KEY_ID` and
 `COLORS_PAR_R2_SECRET_ACCESS_KEY`. `s3` needs `s3-bucket` and `s3-region` and
-authenticates through OpenTofu's ambient AWS chain. `local` needs nothing and
-keeps state in the work directory, which is fine for a throwaway and wrong for
-anything a second person touches.
+authenticates through OpenTofu's ambient AWS chain. Compute requires remote
+state; the default backend is R2.
 
 ## Airflow
 
@@ -120,7 +111,7 @@ Credentials: `COLORS_PAR_AIRFLOW_ADMIN_PASSWORD` and
 
 Both images are pinned rather than floating, and validation refuses a tag-less
 one. An unpinned tag makes two creates months apart different deployments, and an
-Airflow minor upgrade migrates the metadata database — something to do
+Airflow minor upgrade migrates the metadata database. something to do
 deliberately, with a base backup taken first.
 
 ### Authentication is Caddy's, not Airflow's
@@ -132,7 +123,7 @@ publishes no port at all, so Caddy is the only route to it, and
 behind the first.
 
 This is because Airflow 3 replaced the FAB auth manager with
-`SimpleAuthManager`, which does not accept a password from configuration — it
+`SimpleAuthManager`, which does not accept a password from configuration. it
 generates one into a `.generated` file at startup. Setting an Airflow password
 would mean writing that file ourselves and depending on its name.
 
@@ -162,7 +153,7 @@ optional decoration: the zone is set to `ssl = strict`, so Cloudflare validates
 the origin certificate rather than accepting anything.
 
 `caddy-acme-email` is optional and gets expiry and problem notices from the CA.
-Comment it out rather than leaving `REPLACE_ME` — the placeholder would render
+Comment it out rather than leaving `REPLACE_ME`. the placeholder would render
 into the Caddyfile verbatim as an address to register.
 
 ## DAGs
@@ -177,7 +168,7 @@ Credential: `COLORS_PAR_GITHUB_TOKEN`, which needs only the `repo` scope.
 
 **Not `workflow`**, and that is deliberate. The seeded deploy workflow lives at
 `.github/workflows/deploy-dags.yml`, and writing that path through the REST API
-would require the `workflow` scope — which GitHub gates separately, because a
+would require the `workflow` scope. which GitHub gates separately, because a
 workflow file is arbitrary code execution in CI with that repository's secrets.
 Granting it would widen this token across every repository the org can see, for
 the sake of one example file, and would contradict the posture everywhere else
@@ -185,14 +176,14 @@ here: the deploy key is write-only, confined to one directory, with no sudo.
 
 So the seed is a **git push over SSH** instead. A push carries no OAuth scope,
 so the operator's own key does it, exactly as they would by hand. That needs an
-SSH key GitHub accepts — check with `ssh -T git@github.com`. The token stays
+SSH key GitHub accepts. check with `ssh -T git@github.com`. The token stays
 narrow and is used only for the repository, the environment and the secrets.
 
 The repository is created **private**. DAGs carry business logic, and a public
 default is a mistake you only make once.
 
 Seeding is once-only. If the repository already exists its contents are left
-entirely alone and only the environment secrets are reconciled — Colors converges
+entirely alone and only the environment secrets are reconciled. Colors converges
 on every create, and a converging seed would overwrite real DAGs with the
 example.
 
@@ -211,7 +202,7 @@ restrict,command="/usr/local/bin/rrsync -wo <dags-dest>" ssh-ed25519 …
 
 `rrsync` ships with rsync and exists for exactly this. `-wo` makes it
 write-only, so a leaked key can write DAGs into one directory, cannot read them
-back, cannot run a command, and needs **no sudo at all** — Airflow's
+back, cannot run a command, and needs **no sudo at all**. Airflow's
 dag-processor rescans on a timer, so nothing has to be restarted after a sync.
 
 `dags-dest` must be absolute. A relative path would confine the key relative to
@@ -224,7 +215,7 @@ the compose file bind-mounts.
 |---|---|
 | `postgres-version` | the PGDG major version, as an integer |
 | `walg-version` | the pinned WAL-G release tag, e.g. `v3.0.8` |
-| `walg-r2-bucket` | the backup bucket — **not** the state bucket |
+| `walg-r2-bucket` | the backup bucket. **not** the state bucket |
 | `walg-r2-endpoint` | the S3 API endpoint for that bucket |
 | `walg-r2-region` | `auto` for R2 |
 | `walg-full-backup-oncalendar` | a **systemd OnCalendar** expression, not a crontab line |
@@ -275,45 +266,17 @@ the box.
 
 ## State keys
 
-Remote state is keyed `<profile>/<stage>.tfstate`:
+The compute library owns `<profile>/compute/coordination.json`, shared state,
+and per-node state. Build documents are under `airflow-compute/shared` and
+`airflow-compute/nodes`. DNS and SMTP retain their existing state keys:
 
 ```text
-<profile>/airflow-compute.tfstate     this package's own stage
-<profile>/tofu-dns.tfstate            ONCE's name
-<profile>/tofu-smtp.tfstate           ONCE's name
-<profile>/tofu-smtp-post.tfstate      ONCE's name
+<profile>/tofu-dns.tfstate
+<profile>/tofu-smtp.tfstate
+<profile>/tofu-smtp-post.tfstate
 ```
 
-The compute stage is deliberately not called `tofu-compute`, so a colliding
-profile still cannot produce ONCE's compute state key. **The other three get no
-such protection**: each ONCE step computes its own directory internally, so
-renaming would mean forking them and forfeiting the reuse that motivated
-delegating at all.
-
-For those three, `profile` alone separates this project from an ONCE project in
-the same bucket. Choose it accordingly.
-
-The WAL-G archive is scoped the same way, under `s3://<walg-r2-bucket>/<profile>`.
-
-## Credential summary
-
-```sh
-# .envrc.private — gitignored, never committed
-export COLORS_PAR_DO_TOKEN=…                     # compute
-export COLORS_PAR_CLOUDFLARE_API_TOKEN=…         # dns
-export COLORS_PAR_RESEND_API_KEY=…               # smtp
-export COLORS_PAR_RESEND_PASSWORD=…              # smtp relay
-export COLORS_PAR_GITHUB_TOKEN=…                 # the DAG repository
-export COLORS_PAR_R2_ACCESS_KEY_ID=…             # opentofu state
-export COLORS_PAR_R2_SECRET_ACCESS_KEY=…
-export COLORS_PAR_WALG_R2_ACCESS_KEY_ID=…        # backups — a different bucket
-export COLORS_PAR_WALG_R2_SECRET_ACCESS_KEY=…
-export COLORS_PAR_POSTGRES_PASSWORD=…            # the metadata database
-export COLORS_PAR_AIRFLOW_FERNET_KEY=…           # KEEP THIS — see above
-export COLORS_PAR_AIRFLOW_ADMIN_PASSWORD=…       # the browser prompt
-```
-
-The five that reach the machine — the WAL-G pair, the database password, the
-Fernet key, the admin password, and the relay password — are read from the
-process environment by Ansible and written into 0600 files on the host. They
-never pass through `.colors/`.
+The old `<profile>/airflow-compute.tfstate` requires explicit state migration.
+Do not run create against an existing legacy deployment to try to adopt it.
+Delete requires recorded library inventory before any GitHub or SSH cleanup.
+Keep `profile` unique across deployments sharing a backend.

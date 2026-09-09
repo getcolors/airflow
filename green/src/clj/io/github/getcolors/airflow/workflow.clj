@@ -39,6 +39,7 @@
    [green.progress :as progress]
    [green.tofu :as tofu]
    [green.workflow :as wf]
+   [io.github.getcolors.airflow.machine :as machine]
    [io.github.getcolors.airflow.github :as github]
    [io.github.getcolors.airflow.tools :as tools]
    [io.github.getcolors.airflow.validate :as validate]))
@@ -48,7 +49,7 @@
    :provider-compute "digitalocean"
    :provider-dns "cloudflare"
    :provider-smtp "resend"
-   :provider-backend "local"
+   :provider-backend "r2"
    :workdir ".colors"})
 
 ;; ---------------------------------------------------------------------------
@@ -63,21 +64,11 @@
             :params walk/keywordize-keys)
     (catch Exception _ nil)))
 
-(defn adopt-existing-state
-  "Delete renders the same templates as create, so a destroy needs the params
-  the earlier stages produced — the machine's address for the DNS records, the
-  Resend domain ids for the verification ones.
-
-  The compute output is republished under `:once/compute-params` as well as
-  merged flat, because that is the key ONCE's delegated DNS step reads. Without
-  it a delete would render its records against the fallback address and then
-  propose destroying records that do not match what is there."
-  [opts]
-  (let [compute (state-output opts (tools/tool-dir opts tools/compute-tool))
-        smtp (state-output opts (tools/delegated-tool-dir opts tools/smtp-tool))]
-    (cond-> opts
-      compute (-> (merge compute) (assoc :once/compute-params compute))
-      smtp (-> (merge smtp) (assoc :once/smtp-params smtp)))))
+(defn adopt-existing-state [opts]
+  (let [loaded (machine/load-inventory opts)]
+    (if (wf/failed? loaded) loaded
+        (let [smtp (state-output opts (tools/delegated-tool-dir opts tools/smtp-tool))]
+          (cond-> loaded smtp (-> (merge smtp) (assoc :once/smtp-params smtp)))))))
 
 (defn- with-deploy-keys
   "Attach the key `ansible-remote` installs and the `github` step publishes.
@@ -124,7 +115,7 @@
           :after-validate
           (fn [opts _ {:keys [event real?]}]
             (if (and real? (= :delete event))
-              (assoc (adopt-existing-state opts) :green/exit 0)
+              (adopt-existing-state opts)
               (with-deploy-keys opts real?)))}
     env)))
 
@@ -157,7 +148,8 @@
   reconciling anything on it first would be work against a machine about to stop
   existing."
   [opts]
-  (-> opts tools/ansible-local-step tools/ansible-remote-step))
+  (let [result (tools/ansible-local-step opts)]
+    (if (wf/failed? result) result (tools/ansible-remote-step result))))
 
 ;; ---------------------------------------------------------------------------
 ;; wiring
@@ -216,11 +208,6 @@
    {:dir-fn dir-fn
     :key-fn #(str (or (:profile %) "airflow") "/" tool ".tfstate")}))
 
-(defn own-backend-advice
-  "Backend advice for a stage this package renders itself."
-  [tool]
-  (backend-advice #(tools/tool-dir % tool) tool))
-
 (defn delegated-backend-advice
   "Backend advice for a stage ONCE renders.
 
@@ -240,8 +227,6 @@
 
 (def workflow
   (-> (wf/workflow {:start :airflow/start :wire-fn wire-fn})
-      (wf/advice-add :airflow/compute :before ::backend
-                     (own-backend-advice tools/compute-tool))
       (wf/advice-add :airflow/smtp :before ::backend
                      (delegated-backend-advice tools/smtp-tool))
       (wf/advice-add :airflow/dns :before ::backend

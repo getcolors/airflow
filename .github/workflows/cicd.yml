@@ -24,6 +24,8 @@ jobs:
         run: cd blue && uv sync && uv run pytest -q
       - name: Byte parity
         run: ./scripts/parity.sh
+      - name: SSH config play
+        run: uv run --with ansible-core python scripts/ssh-config-probe.py
       - name: Launcher resolution
         run: ./scripts/launcher.sh
   tag:
