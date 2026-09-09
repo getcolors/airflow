@@ -447,7 +447,7 @@
         config {:dir dir
                 :inventory "inventory.ini"
                 :playbooks {:create "main.yml" :delete "main.yml"}
-                :extra-vars {:host_alias (:host-alias data) :ssh_hosts [{:name (:host-alias data) :ip (:ip data) :user (:user data) :identity_file (:ssh-private-key-path opts)}]
+                :extra-vars {:ssh_legacy_marker_prefix "airflow" :host_alias (:host-alias data) :ssh_hosts [{:name (:host-alias data) :ip (:ip data) :user (:user data) :identity_file (:ssh-private-key-path opts)}]
                              :colors_keygen (boolean (:ssh-keygen opts))
                              :block_state (if delete? "absent" "present")}}]
     (ansible/ansible-with-spec opts config specs)))

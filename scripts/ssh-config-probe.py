@@ -25,12 +25,13 @@ def main():
         (home / '.ssh').mkdir(mode=0o700)
         unrelated = 'Host unrelated\n    User operator\n'
         config = home / '.ssh/config'
-        config.write_text(unrelated)
+        legacy = f'# BEGIN {root.name} probe ANSIBLE MANAGED BLOCK\nHost probe\n    HostName 203.0.113.20\n    User root\n# END {root.name} probe ANSIBLE MANAGED BLOCK\n'
+        config.write_text(legacy + unrelated)
         inventory = work / 'inventory.ini'
         inventory.write_text('[local]\nlocalhost ansible_connection=local\n')
         play = work / 'main.yml'
         variables = work / 'vars.json'
-        payload = {'host_alias': 'probe', 'ssh_hosts': [
+        payload = {'ssh_legacy_marker_prefix': root.name, 'host_alias': 'probe', 'ssh_hosts': [
             {'name': 'probe', 'ip': '203.0.113.10', 'user': 'ubuntu'},
             {'name': 'probe-worker-0', 'ip': '203.0.113.11', 'user': 'root'}], 'block_state': 'present'}
         environment = {**os.environ, 'HOME': str(home), 'ANSIBLE_LOCAL_TEMP': str(work / 'ansible-tmp'), 'ANSIBLE_NOCOLOR': '1'}
@@ -45,6 +46,7 @@ def main():
             assert ('changed=1' if changed else 'changed=0') in result.stdout, result.stdout
             value = config.read_text()
             assert unrelated in value
+            assert legacy not in value
             if state == 'present':
                 assert ('IdentityFile ~/.ssh/probe' in value) is keygen
                 assert ('IdentitiesOnly yes' in value) is keygen
