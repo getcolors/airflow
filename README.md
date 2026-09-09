@@ -117,3 +117,5 @@ it is.
 ## Licence
 
 MIT.
+
+Create and build serialize the package-owned SSH alias stage before remote Ansible. A failed local ownership check stops application convergence; GitHub publication remains after remote convergence.

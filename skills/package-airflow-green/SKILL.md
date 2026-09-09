@@ -158,3 +158,5 @@ Say what actually happened. If Ansible failed at a task, name the task. If a
 `gh` call failed, say which credential it was publishing. Never report a
 successful `build` as evidence that a `create` would work. it renders from
 desired state alone and contacts nothing.
+
+Create and build serialize the package-owned SSH alias stage before remote Ansible. A failed local ownership check stops application convergence; GitHub publication remains after remote convergence.

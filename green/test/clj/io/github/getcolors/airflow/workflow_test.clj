@@ -134,12 +134,12 @@
   said `github` runs after `ansible-remote` in prose and drew a three-way fork
   in its diagram; the fork is what got built."
   (let [g (graph :create)]
-    (is (= [:airflow/ansible-local :airflow/ansible-remote]
+    (is (= [:airflow/ansible-local]
            (:airflow/smtp-post g))
         "smtp-post forks into the two Ansible stages only")
     (is (= [:airflow/github] (:airflow/ansible-remote g))
         "and github waits for the machine to have the key")
-    (is (= [] (:airflow/ansible-local g)))
+    (is (= [:airflow/ansible-remote] (:airflow/ansible-local g)))
     (is (= [] (:airflow/github g)))))
 
 (deftest delete-revokes-first-and-destroys-last
@@ -209,3 +209,8 @@
                     tools/ansible-remote-tool tools/github-tool]]
         (is (.isDirectory (io/file (tools/tool-dir opts tool)))
             (str tool " must render"))))))
+
+(deftest ssh-alias-precedes-remote-convergence
+  (doseq [event [:create :build]]
+    (is (= [:airflow/ansible-local] (vec (rest (workflow/wire-fn :airflow/smtp-post {:green/event event})))))
+    (is (= [:airflow/ansible-remote] (vec (rest (workflow/wire-fn :airflow/ansible-local {:green/event event})))))))

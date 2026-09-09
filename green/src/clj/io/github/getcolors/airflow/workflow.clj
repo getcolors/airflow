@@ -1,9 +1,7 @@
 (ns io.github.getcolors.airflow.workflow
   "The DAG the launcher runs, and the steps that are not a tool.
 
-      create / build   start ─ compute ─ smtp ─ dns ─ smtp-post ─┬─ ansible-local
-                                                                 ├─ ansible-remote
-                                                                 └─ github
+      create / build   start ─ compute ─ smtp ─ dns ─ smtp-post ─ ansible-local ─ ansible-remote ─ github
 
       delete           start ─ github ─ ansible-cleanup ─ smtp-post ─ dns ─┬─ smtp
                                                                           └─ compute
@@ -172,9 +170,8 @@
       :airflow/smtp           [tools/smtp-step :airflow/dns]
       :airflow/dns            [tools/dns-step :airflow/smtp-post]
       :airflow/smtp-post      [tools/smtp-post-step
-                               :airflow/ansible-local
-                               :airflow/ansible-remote]
-      :airflow/ansible-local  [tools/ansible-local-step]
+                               :airflow/ansible-local]
+      :airflow/ansible-local  [tools/ansible-local-step :airflow/ansible-remote]
       ;; github follows ansible-remote rather than forking beside it, which is
       ;; ONCE's wiring and what this package's plan says in prose — while its
       ;; ASCII diagram drew a three-way fork, and the fork is what got built.

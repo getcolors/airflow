@@ -31,7 +31,7 @@ async def ansible_cleanup_step(o):
  return r if r.get("blue/exit") else await tools.ansible_remote_step(r)
 def wire_fn(s,o):
  if o.get("blue/event")=="delete":return{"airflow/start":(start_step,"airflow/github"),"airflow/github":(github_step,"airflow/ansible-cleanup"),"airflow/ansible-cleanup":(ansible_cleanup_step,"airflow/smtp-post"),"airflow/smtp-post":(tools.smtp_post_step,"airflow/dns"),"airflow/dns":(tools.dns_step,"airflow/smtp","airflow/compute"),"airflow/smtp":(tools.smtp_step,),"airflow/compute":(tools.compute_step,)}.get(s)
- return{"airflow/start":(start_step,"airflow/compute"),"airflow/compute":(tools.compute_step,"airflow/smtp"),"airflow/smtp":(tools.smtp_step,"airflow/dns"),"airflow/dns":(tools.dns_step,"airflow/smtp-post"),"airflow/smtp-post":(tools.smtp_post_step,"airflow/ansible-local","airflow/ansible-remote"),"airflow/ansible-local":(tools.ansible_local_step,),"airflow/ansible-remote":(tools.ansible_remote_step,"airflow/github"),"airflow/github":(github_step,)}.get(s)
+ return{"airflow/start":(start_step,"airflow/compute"),"airflow/compute":(tools.compute_step,"airflow/smtp"),"airflow/smtp":(tools.smtp_step,"airflow/dns"),"airflow/dns":(tools.dns_step,"airflow/smtp-post"),"airflow/smtp-post":(tools.smtp_post_step,"airflow/ansible-local"),"airflow/ansible-local":(tools.ansible_local_step, "airflow/ansible-remote"),"airflow/ansible-remote":(tools.ansible_remote_step,"airflow/github"),"airflow/github":(github_step,)}.get(s)
 def backend_advice(dir_fn,t):
  return tofu.conventional_backend_advice(dir=dir_fn,key=lambda o:f"{o.get('profile')or'airflow'}/{t}.tfstate")
 SIDE=["airflow/compute","airflow/smtp","airflow/dns","airflow/smtp-post","airflow/ansible-local","airflow/ansible-remote","airflow/ansible-cleanup","airflow/github"]
