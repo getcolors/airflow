@@ -3,8 +3,7 @@
 
       create / build   start ─ compute ─ smtp ─ dns ─ smtp-post ─ ansible-local ─ ansible-remote ─ github
 
-      delete           start ─ github ─ ansible-cleanup ─ smtp-post ─ dns ─┬─ smtp
-                                                                          └─ compute
+      delete           start ─ github ─ ansible-cleanup ─ smtp-post ─ dns ─ smtp ─ compute
 
   This is ONCE's shape rather than walter's, and the SMTP ordering is why. The
   Resend sending domain must exist before its verification records can be
@@ -64,7 +63,7 @@
 
 (defn adopt-existing-state [opts]
   (let [loaded (machine/load-inventory opts)]
-    (if (wf/failed? loaded) loaded
+    (if (or (wf/failed? loaded) (:colors-compute/already-destroyed loaded)) loaded
         (let [smtp (state-output opts (tools/delegated-tool-dir opts tools/smtp-tool))]
           (cond-> loaded smtp (-> (merge smtp) (assoc :once/smtp-params smtp)))))))
 
@@ -160,8 +159,8 @@
       :airflow/github          [github-step :airflow/ansible-cleanup]
       :airflow/ansible-cleanup [ansible-cleanup-step :airflow/smtp-post]
       :airflow/smtp-post       [tools/smtp-post-step :airflow/dns]
-      :airflow/dns             [tools/dns-step :airflow/smtp :airflow/compute]
-      :airflow/smtp            [tools/smtp-step]
+      :airflow/dns             [tools/dns-step :airflow/smtp]
+      :airflow/smtp            [tools/smtp-step :airflow/compute]
       :airflow/compute         [tools/compute-step])
     ;; :create and :build
     (case step
@@ -223,7 +222,7 @@
    :airflow/github])
 
 (def workflow
-  (-> (wf/workflow {:start :airflow/start :wire-fn wire-fn})
+  (-> (wf/workflow {:start :airflow/start :wire-fn wire-fn :next-fn (fn [step successors opts] (if (or (wf/failed? opts) (and (= step :airflow/start) (= :delete (:green/event opts)) (:colors-compute/already-destroyed opts))) [] (mapv #(vector % opts) successors)))})
       (wf/advice-add :airflow/smtp :before ::backend
                      (delegated-backend-advice tools/smtp-tool))
       (wf/advice-add :airflow/dns :before ::backend

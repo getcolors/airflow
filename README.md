@@ -119,3 +119,5 @@ it is.
 MIT.
 
 Create and build serialize the package-owned SSH alias stage before remote Ansible. A failed local ownership check stops application convergence; GitHub publication remains after remote convergence.
+
+Delete serializes DNS, SMTP, then compute destruction. A validated retired compute journal stops repeated delete at the start step without reading key files or running application cleanup. Credential and destruction-protection checks still apply; absent or unreadable ownership never counts as successful cleanup.

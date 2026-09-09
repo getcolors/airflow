@@ -150,7 +150,7 @@
       (is (= [:airflow/ansible-cleanup] (:airflow/github g)))
       (is (= [:airflow/smtp-post] (:airflow/ansible-cleanup g)))
       (is (= [:airflow/dns] (:airflow/smtp-post g)))
-      (is (= [:airflow/smtp :airflow/compute] (:airflow/dns g)))
+      (is (= [:airflow/smtp] (:airflow/dns g)))
       (is (= [] (:airflow/compute g))))))
 
 (deftest build-and-create-run-the-same-graph
@@ -214,3 +214,29 @@
   (doseq [event [:create :build]]
     (is (= [:airflow/ansible-local] (vec (rest (workflow/wire-fn :airflow/smtp-post {:green/event event})))))
     (is (= [:airflow/ansible-remote] (vec (rest (workflow/wire-fn :airflow/ansible-local {:green/event event})))))))
+
+(deftest retired-inventory-only-allows-delete
+  (require '[io.github.getcolors.compute-inspection :as inspection])
+  (doseq [status ["destroyed" "absent" "error"] event [:create :delete]]
+    (with-redefs-fn {(resolve 'inspection/read-deployment) (fn [& _] {:status status})}
+      (fn [] (let [result (machine/load-inventory {:green/event event} {})
+                   allowed (and (= status "destroyed") (= event :delete))]
+               (is (= (if allowed 0 1) (:green/exit result)))
+               (is (= allowed (boolean (:colors-compute/already-destroyed result)))))))))
+
+(deftest native-repeat-delete-and-cleanup-order
+  (require '[green.workflow :as engine])
+  (doseq [retired [true false] failure [true false]]
+    (let [seen (atom [])
+          graph ((resolve 'engine/workflow)
+                 {:start :airflow/start :next-fn (:green.workflow/next-fn workflow/workflow)
+                  :wire-fn (fn [step opts]
+                             (let [declared (workflow/wire-fn step opts)]
+                               (into [(fn [current] (swap! seen conj step)
+                                        (assoc current :colors-compute/already-destroyed retired :green/exit (if failure 1 0)))]
+                                     (rest declared))))})
+          result ((resolve 'engine/run) graph {:green/event :delete})]
+      (if (or retired failure)
+        (is (= [:airflow/start] @seen))
+        (is (= [:airflow/dns :airflow/smtp :airflow/compute] (take-last 3 @seen))))
+      (is (= (if failure 1 0) (:green/exit result))))))
