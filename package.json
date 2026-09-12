@@ -21,6 +21,6 @@
   },
   "dependencies": {
     "package-once-red": "github:getcolors/once#a1fe1be7a427dd2e406ff7befd1c43a53e7c3618",
-    "colors-compute-red": "github:getcolors/colors-compute#01635b47b3ca328402924418cb822180df2e7a3f"
+    "colors-compute-red": "github:getcolors/colors-compute#ae28ea74962bb1897fa6365c143c1d43ac1fe095"
   }
 }

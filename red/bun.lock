@@ -5,8 +5,9 @@
     "": {
       "name": "package-airflow-red-dev",
       "dependencies": {
-        "colors-compute-red": "github:getcolors/colors-compute#01635b47b3ca328402924418cb822180df2e7a3f",
+        "colors-compute-red": "github:getcolors/colors-compute#ae28ea74962bb1897fa6365c143c1d43ac1fe095",
         "package-once-red": "github:getcolors/once#a1fe1be7a427dd2e406ff7befd1c43a53e7c3618",
+        "red": "github:getcolors/red#db9bfe61282e2093f4098bf5a6ee0cd10added6e",
       },
       "devDependencies": {
         "@types/bun": "^1.2.0",
@@ -61,7 +62,7 @@
 
     "bun-types": ["bun-types@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ=="],
 
-    "colors-compute-red": ["colors-compute-red@github:getcolors/colors-compute#01635b4", { "dependencies": { "red": "github:getcolors/red#db9bfe61282e2093f4098bf5a6ee0cd10added6e" } }, "getcolors-colors-compute-01635b4", "sha512-yYrKVAhREhm6PbqyYiD9xVPt3xyrJTuUZcvpVmBzRb5Jv7CuOR/wEsJAHd4OlK6UvwNPwLhcVVktgaAyH2ioBQ=="],
+    "colors-compute-red": ["colors-compute-red@github:getcolors/colors-compute#ae28ea7", { "peerDependencies": { "red": "*" } }, "getcolors-colors-compute-ae28ea7", "sha512-AKgS7dS07pGgS2O7OhJfAu6MS0/xxJTx/WIxyfGORXbySJEI10ySThyqPYWWJu9SRcgzdFCw0DpkIVm3mWlInQ=="],
 
     "package-once-red": ["package-once-red@github:getcolors/once#a1fe1be", { "peerDependencies": { "colors-compute-red": "*", "red": "*" }, "optionalPeers": ["colors-compute-red", "red"] }, "getcolors-once-a1fe1be", "sha512-QDx9xiW8CEFNmzSRf9YOpm9CtEVqUkE83z04dHJ8QRxNghlzhCJ8A23eYxJa79MgcPo2RKDua7htaYa/puqLdg=="],
 
