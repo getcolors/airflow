@@ -14,7 +14,7 @@ import { homedir } from "node:os";
 // directory, which would halt Bun's upward resolution of `package-airflow-red` and
 // break the development symlink at red/red.
 const PINS = {
-  "package-airflow-red": "github:getcolors/airflow#c0ee660fbc8ed10586dbbbc405366ef3679001bc",
+  "package-airflow-red": "github:getcolors/airflow#49e5beda519c8d711b0f15e1c8bef5f66db4026d",
   // The Red SDK is a peer of colors-compute-red, not a dependency: a cold
   // cache installs nothing for a peer, so the consumer pins it explicitly, at
   // the commit red/package.json pins. scripts/launcher.sh checks they agree.

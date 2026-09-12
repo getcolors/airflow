@@ -4,7 +4,7 @@
 # dependencies = ["package-airflow-blue"]
 #
 # [tool.uv.sources]
-# package-airflow-blue = { git = "https://github.com/getcolors/airflow.git", rev = "c0ee660fbc8ed10586dbbbc405366ef3679001bc", subdirectory = "blue" }
+# package-airflow-blue = { git = "https://github.com/getcolors/airflow.git", rev = "49e5beda519c8d711b0f15e1c8bef5f66db4026d", subdirectory = "blue" }
 # ///
 """Thin launcher for package-airflow-blue."""
 from package_airflow_blue import exec, run
